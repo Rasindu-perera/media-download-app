@@ -1,0 +1,43 @@
+.App {
+  background-color: #f5f5f5;
+  min-height: 100vh;
+  padding: 20px 0;
+}
+
+.card {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.card-header {
+  background: linear-gradient(45deg, #007bff, #0056b3);
+}
+
+.btn-primary {
+  background: linear-gradient(45deg, #007bff, #0056b3);
+  border: none;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(45deg, #0069d9, #004494);
+}
+
+.progress {
+  height: 25px;
+  border-radius: 5px;
+}
+
+/* Add playlist-specific styling */
+.playlist-items {
+  border: 1px solid #eee;
+  border-radius: 6px;
+}
+
+.playlist-item:hover {
+  background-color: #f8f9fa;
+}
+
+.playlist-item.selected {
+  background-color: #e2f0ff;
+  border: 1px solid #b8daff;
+}

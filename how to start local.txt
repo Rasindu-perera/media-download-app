@@ -1,0 +1,23 @@
+how to start local:
+
+step 01:  Install all required dependencies:
+          \media download app\backend> pip install -r requirements.txt  
+
+step 02:  Update yt-dlp to the latest version:
+          \media download app\backend> pip install -U yt-dlp
+
+step 03:  \media download app\backend> python -m uvicorn main:app --reload  (start this backend server)
+
+step 04:  \media download app\frontend> npm start (start this frontend server)
+
+step 05:  Open your browser and navigate to `http://localhost:3000`
+
+Test URLs for different platforms:
+- YouTube: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+- YouTube Playlist: https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI
+- Instagram: https://www.instagram.com/p/CrVvDJUv8Fm/ 
+- TikTok: https://www.tiktok.com/@tiktok/video/6584647400055377158
+- Spotify Track: https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT
+- Spotify Playlist: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+
+

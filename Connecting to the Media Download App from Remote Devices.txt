@@ -1,0 +1,61 @@
+Connecting to the Media Download App from Remote Devices
+To make your app accessible from other devices on your network (or the internet), you need to make some configuration changes to both the backend and frontend:
+
+1. Making the Backend Accessible
+By default, Uvicorn binds only to localhost (127.0.0.1), which means it's only accessible from your own computer. To make it accessible from other devices:
+# Find your computer's IP address
+ipconfig
+# Look for the IPv4 Address under your active network connection (like 192.168.1.x)
+
+# Start the server with host and port specified
+cd "C:\Users\Rasindu Perera\Documents\media download app\backend"
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+The --host 0.0.0.0 flag makes the server listen on all network interfaces.
+
+2. Making the Frontend Accessible
+Similarly, React's development server needs to be configured to accept remote connections:
+# From your frontend directory
+cd "C:\Users\Rasindu Perera\Documents\media download app\frontend"
+
+# Option 1: Using the HOST environment variable
+set HOST=0.0.0.0
+npm start
+
+# Option 2: Or using the direct command
+npm start -- --host 0.0.0.0
+
+3. Update API URL Configuration
+In your frontend code, update the API_URL to use your computer's IP address:
+// Change this line:
+const API_URL = 'http://localhost:8000/api';
+
+// To this (replace with your actual IP):
+const API_URL = 'http://192.168.1.x:8000/api';
+
+4. Firewall Configuration
+Make sure your Windows Firewall allows connections to ports 3000 (frontend) and 8000 (backend):
+
+Open Windows Defender Firewall with Advanced Security
+Select "Inbound Rules" → "New Rule..."
+Choose "Port" → "TCP"
+Enter specific ports: "3000, 8000"
+Allow the connection
+Apply to all network types
+Give the rule a name (like "Media Downloader App")
+5. Accessing from Remote Devices
+From other devices on your network:
+
+Frontend: http://192.168.1.x:3000 (replace with your computer's IP)
+Backend API: http://192.168.1.x:8000
+6. Internet Access (Optional)
+If you want to make your app accessible from outside your local network:
+
+Configure port forwarding on your router
+Use a service like ngrok (ngrok http 3000)
+Or deploy to a cloud service like Heroku, Vercel, or AWS
+Security Considerations
+When exposing your app to other devices, always be aware of security implications
+For serious deployments, consider using HTTPS
+If you're just testing, limit access to your local network
+With these changes, other devices should be able to connect to your media download application.

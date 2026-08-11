@@ -90,6 +90,27 @@ const DownloadForm = ({ setDownloadStatus }) => {
     });
   };
   
+  const downloadFileAsBlob = async (taskId, filename) => {
+    try {
+      const response = await axios.get(`${API_URL}/download/${taskId}`, {
+        responseType: 'blob'
+      });
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error("Blob download failed:", err);
+      throw err;
+    }
+  };
+
+  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
   const startDownload = async (e) => {
     e.preventDefault();
     if (!url) return;
@@ -97,52 +118,140 @@ const DownloadForm = ({ setDownloadStatus }) => {
     setLoading(true);
     setError(null);
     
-    try {
-      const quality = mediaType === 'video' ? videoQuality : audioQuality;
-      const fileFormat = mediaType === 'video' ? videoFormat : audioFormat;
-      
-      const response = await axios.post(`${API_URL}/download`, {
-        url,
-        format_type: mediaType,
-        quality,
-        file_format: fileFormat,
-        is_playlist: isPlaylist,
-        selected_indices: isPlaylist ? selectedIndices : null
-      });
-      
-      const taskId = response.data.task_id;
-      
-      // Start polling for progress
-      setDownloadStatus({
-        taskId,
-        status: 'queued',
-        progress: 0
-      });
-      
-      const pollInterval = setInterval(async () => {
-        try {
-          const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
-          const { status, progress, error, file_path } = progressResponse.data;
-          
-          setDownloadStatus({ taskId, status, progress, error, filePath: file_path });
-          
-          if (status === 'completed') {
+    const quality = mediaType === 'video' ? videoQuality : audioQuality;
+    const fileFormat = mediaType === 'video' ? videoFormat : audioFormat;
+    
+    if (!isPlaylist) {
+      // Single video download logic
+      try {
+        const response = await axios.post(`${API_URL}/download`, {
+          url,
+          format_type: mediaType,
+          quality,
+          file_format: fileFormat,
+          is_playlist: false,
+          selected_indices: null
+        });
+        
+        const taskId = response.data.task_id;
+        setDownloadStatus({ taskId, status: 'queued', progress: 0 });
+        
+        const pollInterval = setInterval(async () => {
+          try {
+            const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
+            const { status, progress, error, file_path } = progressResponse.data;
+            
+            setDownloadStatus({ taskId, status, progress, error, filePath: file_path });
+            
+            if (status === 'completed') {
+              clearInterval(pollInterval);
+              const safeTitle = videoTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+              const filename = `${safeTitle}.${fileFormat}`;
+              await downloadFileAsBlob(taskId, filename);
+            } else if (status === 'error') {
+              clearInterval(pollInterval);
+              setError(`Download failed: ${error}`);
+            }
+          } catch (err) {
             clearInterval(pollInterval);
-            // Create download link
-            window.location.href = `${API_URL}/download/${taskId}`;
-          } else if (status === 'error') {
-            clearInterval(pollInterval);
-            setError(`Download failed: ${error}`);
+            setError(`Failed to get progress: ${err.message}`);
           }
-        } catch (err) {
-          clearInterval(pollInterval);
-          setError(`Failed to get progress: ${err.message}`);
-        }
-      }, 1000);
+        }, 1000);
+      } catch (err) {
+        setError(`Failed to start download: ${err.response?.data?.detail || err.message}`);
+        setLoading(false);
+      }
+    } else {
+      // Playlist sequential queueing logic
+      if (selectedIndices.length === 0) {
+        setError("Please select at least one track to download.");
+        setLoading(false);
+        return;
+      }
       
-    } catch (err) {
-      setError(`Failed to start download: ${err.response?.data?.detail || err.message}`);
-    } finally {
+      const itemsToDownload = selectedIndices.map(index => playlistInfo.items[index]);
+      let successCount = 0;
+      let failedCount = 0;
+      
+      for (let i = 0; i < itemsToDownload.length; i++) {
+        const item = itemsToDownload[i];
+        const safeTitle = item.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+        const filename = `${(i+1).toString().padStart(3, '0')}_${safeTitle}.${fileFormat}`;
+        
+        setDownloadStatus({
+          taskId: 'queue',
+          status: 'downloading',
+          progress: 0,
+          error: `Downloading track ${i + 1} of ${itemsToDownload.length}: ${item.title}`
+        });
+        
+        try {
+          const itemUrl = item.id ? (playlistInfo.platform === 'spotify' ? `https://open.spotify.com/track/${item.id}` : `https://youtube.com/watch?v=${item.id}`) : url;
+          const response = await axios.post(`${API_URL}/download`, {
+            url: itemUrl,
+            format_type: mediaType,
+            quality,
+            file_format: fileFormat,
+            is_playlist: false,
+            selected_indices: null
+          });
+          
+          const taskId = response.data.task_id;
+          
+          // Poll until completed
+          await new Promise((resolve, reject) => {
+            const pollInterval = setInterval(async () => {
+              try {
+                const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
+                const { status, progress, error } = progressResponse.data;
+                
+                setDownloadStatus({
+                  taskId: 'queue',
+                  status: 'downloading',
+                  progress: progress,
+                  error: `Downloading track ${i + 1} of ${itemsToDownload.length}: ${item.title} (${Math.round(progress)}%)`
+                });
+                
+                if (status === 'completed') {
+                  clearInterval(pollInterval);
+                  await downloadFileAsBlob(taskId, filename);
+                  resolve();
+                } else if (status === 'error') {
+                  clearInterval(pollInterval);
+                  reject(new Error(error));
+                }
+              } catch (err) {
+                clearInterval(pollInterval);
+                reject(err);
+              }
+            }, 1000);
+          });
+          
+          successCount++;
+          
+          // Add anti-ban delay (3-5 seconds)
+          if (i < itemsToDownload.length - 1) {
+            setDownloadStatus({
+              taskId: 'queue',
+              status: 'downloading',
+              progress: 100,
+              error: `Waiting 4 seconds before next track to prevent rate-limiting...`
+            });
+            await delay(4000);
+          }
+          
+        } catch (err) {
+          console.error(`Failed to download ${item.title}:`, err);
+          failedCount++;
+        }
+      }
+      
+      setDownloadStatus({
+        taskId: 'queue_done',
+        status: 'completed',
+        progress: 100,
+        error: `Playlist finished! ${successCount} downloaded, ${failedCount} failed.`
+      });
       setLoading(false);
     }
   };

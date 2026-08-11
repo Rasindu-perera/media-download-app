@@ -36,10 +36,20 @@ class PlaylistRequest(BaseModel):
     url: str
 
 # ---------------------------------------------------------------------------
-# Cobalt API (current v10 schema — endpoint is POST /)
+# Cobalt API — multi-instance fallback chain
+# api.cobalt.tools now requires JWT auth; we try public community instances
+# in order and use the first one that succeeds.
 # ---------------------------------------------------------------------------
 
-COBALT_ENDPOINT = "https://api.cobalt.tools/"
+# List of public Cobalt instances to try in order.
+# Add/remove instances here if they go offline or require auth.
+COBALT_INSTANCES = [
+    "https://cobalt.api.timelessnesses.me/",
+    "https://cob.frytki.pl/",
+    "https://cobalt.canine.tools/",
+    "https://dl.caas.ovh/",
+    "https://api.cobalt.tools/",          # kept as last resort (may need auth)
+]
 
 COBALT_HEADERS = {
     "Accept": "application/json",
@@ -60,7 +70,7 @@ VIDEO_QUALITY_MAP = {
     "144":   "144",  "144p":  "144",
 }
 
-# Map quality strings for audio → Cobalt audioBitrate values (kbps, no 'k')
+# Map quality strings for audio → Cobalt audioBitrate (kbps number as string)
 AUDIO_BITRATE_MAP = {
     "320k": "320", "320": "320",
     "256k": "256", "256": "256",
@@ -74,27 +84,47 @@ VALID_AUDIO_FORMATS = {"mp3", "ogg", "wav", "opus", "best"}
 
 def _call_cobalt(payload: dict) -> dict:
     """
-    POST to Cobalt API using the current v10 schema.
-    - Endpoint: POST /
-    - No 'proxies' argument — direct call only.
-    Returns the full JSON response dict on HTTP 200, raises Exception otherwise.
+    Try each Cobalt instance in COBALT_INSTANCES until one succeeds.
+    Skips instances that return auth errors (jwt.missing / api.auth.*).
+    Returns the full JSON response dict on success, raises Exception if all fail.
+    No 'proxies' argument is used anywhere — direct httpx calls only.
     """
+    last_error = "No Cobalt instances available."
+
     with httpx.Client(timeout=45.0) as client:
-        response = client.post(COBALT_ENDPOINT, json=payload, headers=COBALT_HEADERS)
+        for instance_url in COBALT_INSTANCES:
+            try:
+                response = client.post(instance_url, json=payload, headers=COBALT_HEADERS)
 
-    if response.status_code == 200:
-        data = response.json()
-        return data
+                if response.status_code == 200:
+                    data = response.json()
+                    # Skip instances that return an auth error
+                    error_code = (data.get("error") or {}).get("code", "")
+                    if "auth" in error_code:
+                        last_error = f"{instance_url} requires auth: {error_code}"
+                        continue
+                    return data
 
-    # Surface the error body for debugging
-    try:
-        err_body = response.json()
-    except Exception:
-        err_body = response.text
+                # 401/403 → auth required → try next instance
+                if response.status_code in (401, 403):
+                    last_error = f"{instance_url} returned HTTP {response.status_code} (auth required)"
+                    continue
 
-    raise Exception(
-        f"Cobalt returned HTTP {response.status_code}: {err_body}"
-    )
+                # Any other non-200 status → record and try next
+                try:
+                    err_body = response.json()
+                except Exception:
+                    err_body = response.text
+                last_error = f"{instance_url} returned HTTP {response.status_code}: {err_body}"
+
+            except httpx.TimeoutException:
+                last_error = f"{instance_url} timed out"
+            except httpx.ConnectError:
+                last_error = f"{instance_url} connection refused"
+            except Exception as exc:
+                last_error = f"{instance_url} error: {exc}"
+
+    raise Exception(f"All Cobalt instances failed. Last error: {last_error}")
 
 
 def _build_cobalt_payload(target_url: str, format_type: str, quality: str, file_format: str) -> dict:
@@ -103,10 +133,8 @@ def _build_cobalt_payload(target_url: str, format_type: str, quality: str, file_
 
     if format_type == "audio":
         payload["downloadMode"] = "audio"
-        # audioFormat
         fmt = file_format.lower() if file_format.lower() in VALID_AUDIO_FORMATS else "mp3"
         payload["audioFormat"] = fmt
-        # audioBitrate — strip trailing 'k' if present
         bitrate = AUDIO_BITRATE_MAP.get(quality, AUDIO_BITRATE_MAP.get(quality.rstrip("k"), "128"))
         payload["audioBitrate"] = bitrate
     else:
@@ -115,6 +143,104 @@ def _build_cobalt_payload(target_url: str, format_type: str, quality: str, file_
         payload["videoQuality"] = vq
 
     return payload
+
+
+def _extract_url_from_cobalt_response(data: dict) -> str:
+    """
+    Extract the final download URL from any Cobalt response shape:
+      - { url: "..." }                        → tunnel/redirect
+      - { status: "picker", picker: [...] }   → multi-stream (e.g. TikTok)
+    """
+    if "url" in data:
+        return data["url"]
+
+    if data.get("status") == "picker" and data.get("picker"):
+        first = data["picker"][0]
+        return first.get("url", "")
+
+    raise Exception(f"Cobalt returned an unexpected response shape: {data}")
+
+
+# ---------------------------------------------------------------------------
+# YouTube helpers (use yt-dlp for metadata — NO download, NO IP ban risk)
+# ---------------------------------------------------------------------------
+
+def _get_youtube_playlist_info(url: str) -> dict:
+    """
+    Use yt-dlp with extract_flat=True to fetch YouTube playlist metadata
+    without downloading anything. This replaces the broken youtubesearchpython
+    Playlist class.
+    """
+    import yt_dlp
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,   # Only fetch playlist structure, not per-video metadata
+        "skip_download": True,
+        "ignoreerrors": True,
+    }
+
+    # Use cookies if available
+    cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info:
+        raise Exception("yt-dlp returned no info for the URL.")
+
+    entries = info.get("entries") or []
+    items = []
+    for entry in entries:
+        if not entry:
+            continue
+        video_id = entry.get("id", "")
+        video_url = entry.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+        thumbnails = entry.get("thumbnails") or []
+        thumbnail_url = thumbnails[-1]["url"] if thumbnails else (
+            f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg" if video_id else None
+        )
+        items.append({
+            "id": video_url,
+            "title": entry.get("title") or entry.get("webpage_url_basename") or "Unknown",
+            "thumbnail": thumbnail_url,
+            "duration": entry.get("duration"),
+        })
+
+    return {
+        "type": "playlist",
+        "playlist_title": info.get("title") or "YouTube Playlist",
+        "items": items,
+        "count": len(items),
+        "platform": "youtube",
+    }
+
+
+def _get_youtube_video_title(url: str) -> str:
+    """
+    Use yt-dlp to get just the title of a single YouTube video (no download).
+    """
+    import yt_dlp
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": True,
+    }
+    cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return info.get("title") or "YouTube Video"
+    except Exception:
+        return "YouTube Video"
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +255,7 @@ async def health_check():
 @app.post("/api/formats")
 async def get_formats(request: Request):
     """
-    Static format list — Cobalt does not require pre-fetching formats.
-    Also returns single-track info for Spotify URLs so the frontend can
-    display the title without a separate call.
+    Static format list. Cobalt does not require pre-fetching formats.
     """
     return {
         "status": "success",
@@ -142,12 +266,16 @@ async def get_formats(request: Request):
 
 @app.post("/api/download")
 async def start_download(request: DownloadRequest):
-    """Resolve the URL (Spotify → YouTube if needed) then proxy to Cobalt."""
+    """
+    Resolve the URL (Spotify → YouTube if needed) then proxy to Cobalt.
+    Spotify playlist items send individual Spotify track URLs here, which
+    are resolved to YouTube one-by-one at download time.
+    """
     try:
         target_url = request.url
 
         # ------------------------------------------------------------------
-        # Spotify single-track → resolve to YouTube first
+        # Spotify track (single OR playlist item) → resolve to YouTube first
         # ------------------------------------------------------------------
         if is_spotify_url(request.url):
             if request.is_playlist:
@@ -176,7 +304,7 @@ async def start_download(request: DownloadRequest):
                 )
 
         # ------------------------------------------------------------------
-        # Build payload and call Cobalt (v10 schema, no proxies)
+        # Build payload and call Cobalt (v10 schema, no proxies, multi-instance)
         # ------------------------------------------------------------------
         payload = _build_cobalt_payload(
             target_url=target_url,
@@ -186,18 +314,8 @@ async def start_download(request: DownloadRequest):
         )
 
         data = _call_cobalt(payload)
-
-        # Cobalt v10 success: status == "tunnel" or "redirect", url key present
-        if "url" in data:
-            return {"task_id": "cobalt", "url": data["url"]}
-
-        # Cobalt sometimes returns {status: "picker", picker: [...]} for multi-stream
-        if data.get("status") == "picker" and data.get("picker"):
-            # Return the first item's URL
-            first = data["picker"][0]
-            return {"task_id": "cobalt", "url": first.get("url", "")}
-
-        raise Exception(f"Cobalt returned an unexpected response: {data}")
+        download_url = _extract_url_from_cobalt_response(data)
+        return {"task_id": "cobalt", "url": download_url}
 
     except HTTPException:
         raise
@@ -208,97 +326,65 @@ async def start_download(request: DownloadRequest):
 @app.post("/api/playlist-info")
 async def get_playlist_info(request: PlaylistRequest):
     """
-    Return playlist/track info for YouTube or Spotify URLs.
-    For single YouTube videos, returns a 'single' type response instead of crashing.
+    Return playlist / track info for YouTube or Spotify URLs.
+
+    Key design decisions:
+    - Spotify playlists: returns Spotify track URLs as item.id (NOT YouTube URLs).
+      The frontend sends each item.id to /api/download which resolves them one-by-one.
+      This avoids the previous timeout caused by doing N YouTube searches upfront.
+    - YouTube playlists: uses yt-dlp (extract_flat) for reliable, fast metadata.
+    - Single YouTube videos: returns 'single' type with the actual video title.
     """
     try:
-        from youtubesearchpython import Playlist, VideosSearch
+        url = request.url
 
         # ------------------------------------------------------------------
         # Spotify
         # ------------------------------------------------------------------
-        if is_spotify_url(request.url):
-            playlist_info = await get_spotify_details(request.url)
+        if is_spotify_url(url):
+            playlist_info = await get_spotify_details(url)
+            content_type = playlist_info.get("type")
 
-            # For single Spotify tracks, return as-is (frontend handles 'single' type)
-            if playlist_info.get("type") == "single":
+            if content_type == "single":
+                # Single Spotify track — return directly with platform tag
                 playlist_info["platform"] = "spotify"
                 return playlist_info
 
-            # Playlist/album: resolve each track to a YouTube URL
-            direct_urls = []
-            for item in playlist_info.get("items", []):
-                artist = item.get("artist", "")
-                title = item.get("title", "")
-                search_query = f"{artist} {title}".strip()
-                if not search_query:
-                    continue
+            # Playlist / album — return Spotify track URLs directly as item.id.
+            # /api/download will resolve each Spotify URL → YouTube at download time.
+            items = playlist_info.get("items", [])
+            for item in items:
+                spotify_track_id = item.get("id", "")
+                # Replace bare track ID with a full Spotify URL so /api/download
+                # can detect it as a Spotify URL and resolve it properly.
+                if spotify_track_id and not spotify_track_id.startswith("http"):
+                    item["id"] = f"https://open.spotify.com/track/{spotify_track_id}"
 
-                videos_search = VideosSearch(search_query, limit=1)
-                results = videos_search.result()
-                if results and results.get("result"):
-                    direct_urls.append({
-                        "id": results["result"][0]["link"],
-                        "title": title,
-                        "artist": artist,
-                        "thumbnail": item.get("thumbnail"),
-                        "duration": item.get("duration"),
-                    })
-
-            playlist_info["items"] = direct_urls
+            playlist_info["items"] = items
             playlist_info["platform"] = "spotify"
             return playlist_info
 
         # ------------------------------------------------------------------
-        # YouTube
+        # YouTube — detect playlist vs single video
         # ------------------------------------------------------------------
-        url = request.url
-
-        # Detect if this is a playlist URL
-        is_playlist_url = (
+        is_yt_playlist = (
             "list=" in url and
-            ("youtube.com/playlist" in url or "youtube.com/watch" in url)
+            ("youtube.com/playlist" in url or "youtube.com/watch" in url or "youtu.be" in url)
         )
 
-        if is_playlist_url:
+        if is_yt_playlist:
             try:
-                playlist = Playlist(url)
-                while playlist.hasMoreVideos:
-                    playlist.getNextVideos()
-
-                items = []
-                for video in playlist.videos:
-                    thumbnails = video.get("thumbnails") or []
-                    thumbnail_url = thumbnails[0]["url"] if thumbnails else None
-                    items.append({
-                        "id": video.get("link", ""),
-                        "title": video.get("title", "Unknown"),
-                        "thumbnail": thumbnail_url,
-                        "duration": None,
-                    })
-
-                playlist_title = "Unknown Playlist"
-                try:
-                    playlist_title = playlist.info["info"]["title"]
-                except (KeyError, TypeError, AttributeError):
-                    pass
-
-                return {
-                    "type": "playlist",
-                    "playlist_title": playlist_title,
-                    "items": items,
-                    "count": len(items),
-                    "platform": "youtube",
-                }
+                return _get_youtube_playlist_info(url)
             except Exception as playlist_err:
-                # Fall through to single-video response
-                pass
+                # If yt-dlp fails, fall through to single-video response
+                print(f"Playlist extraction failed: {playlist_err}")
 
-        # Single YouTube video — return 'single' type so frontend can show title
+        # Single YouTube video — get actual title with yt-dlp
+        title = _get_youtube_video_title(url)
         return {
             "type": "single",
             "data": {
-                "title": "YouTube Video",
+                "title": title,
                 "artist": "",
                 "thumbnail": None,
             },

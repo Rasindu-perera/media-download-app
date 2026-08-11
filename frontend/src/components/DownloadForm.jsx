@@ -187,7 +187,7 @@ const DownloadForm = ({ setDownloadStatus }) => {
         
         try {
           let itemUrl = url;
-          if (playlistInfo.platform === 'spotify') {
+          if (url.includes('spotify.com')) {
             itemUrl = `ytsearch1:${item.artist || ''} ${item.title}`.trim();
           } else if (item.id) {
             itemUrl = `https://youtube.com/watch?v=${item.id}`;

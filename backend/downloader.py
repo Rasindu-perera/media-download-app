@@ -5,7 +5,8 @@ import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 import random
-
+import time
+from functools import wraps
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
@@ -19,26 +20,45 @@ def get_cookie_file():
         return "cookies.txt"
     return None
 
+import asyncio
+
+def with_retry(max_retries=3, delay=3):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    error_msg = str(e)
+                    if "The page needs to be reloaded" in error_msg or "challenge solving failed" in error_msg:
+                        retries += 1
+                        print(f"[Retry {retries}/{max_retries}] Caught JS challenge/reload error. Waiting {delay}s...")
+                        await asyncio.sleep(delay)
+                    else:
+                        raise e
+            raise Exception("Failed after max retries due to YouTube bot protection.")
+        return wrapper
+    return decorator
 
 def apply_cookie_opts(ydl_opts):
     cookie_file = get_cookie_file()
     if cookie_file:
         ydl_opts['cookiefile'] = cookie_file
         
-    # Always enforce node for JS challenges to prevent 403 Forbidden errors
-    ydl_opts['js_runtimes'] = {'node': {}}
+    ydl_opts['extractor_args'] = {
+        'youtube': [
+            'player_client=ios,android,tv',
+            'player_skip=webpage,js'
+        ]
+    }
     
-    # Enforce multiple fallback clients to prevent LOGIN_REQUIRED on single clients
-    if 'extractor_args' not in ydl_opts:
-        ydl_opts['extractor_args'] = {'youtube': ['player_client=android,ios']}
-    
-    ydl_opts['youtube_include_dash_manifest'] = False
+    ydl_opts['legacyserver'] = False
+    ydl_opts['nocheckcertificate'] = True
+    ydl_opts['ignoreerrors'] = False
+    ydl_opts['no_warnings'] = False
         
-    # Add robust anti-bot options
-    ydl_opts['sleep_interval'] = 2
-    ydl_opts['max_sleep_interval'] = 5
-    ydl_opts['geo_bypass'] = True
-    
     # Override user agent with a randomized one
     if 'http_headers' not in ydl_opts:
         ydl_opts['http_headers'] = {}
@@ -79,6 +99,7 @@ class ProgressHook:
                 progress=100
             )
 
+@with_retry(max_retries=3, delay=3)
 async def get_available_formats(url: str) -> dict:
     """Get available formats for a video"""
     # Check if it's a Spotify URL - import here to avoid circular imports
@@ -180,6 +201,7 @@ async def get_available_formats(url: str) -> dict:
     except Exception as e:
         raise Exception(f"Error extracting formats: {str(e)}")
 
+@with_retry(max_retries=3, delay=3)
 async def download_video(
     url: str,
     quality: str,
@@ -364,6 +386,7 @@ async def download_video(
             error=f"Download failed: {str(e)}"
         )
 
+@with_retry(max_retries=3, delay=3)
 async def download_audio(
     url: str,
     quality: str,
@@ -522,6 +545,7 @@ async def download_audio(
         )
         return None
 
+@with_retry(max_retries=3, delay=3)
 async def get_playlist_details(url: str) -> dict:
     """Get details about a playlist including all video items"""
     ydl_opts = {
@@ -577,6 +601,7 @@ async def get_playlist_details(url: str) -> dict:
     except Exception as e:
         raise Exception(f"Error extracting playlist info: {str(e)}")
 
+@with_retry(max_retries=3, delay=3)
 async def download_playlist(
     url: str,
     format_type: str,

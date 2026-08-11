@@ -516,7 +516,6 @@ async def get_playlist_details(url: str) -> dict:
         'skip_download': True,
         'ignoreerrors': True,
         'extract_flat': 'in_playlist',
-        'extract_flat': True,  # Don't extract individual videos in the playlist
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
     apply_cookie_opts(ydl_opts)
@@ -524,6 +523,9 @@ async def get_playlist_details(url: str) -> dict:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            
+            if not info:
+                raise Exception("Failed to extract info from the URL. The page might need reloading or you may need to sign in.")
             
             # Check if it's a playlist
             if 'entries' in info:

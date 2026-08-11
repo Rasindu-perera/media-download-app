@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
 const DownloadForm = ({ setDownloadStatus }) => {
   const [url, setUrl] = useState('');
@@ -310,9 +310,14 @@ const DownloadForm = ({ setDownloadStatus }) => {
                 >
                   <option value="480p">480p</option>
                   <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                  <option value="4K">4K (2160p)</option>
+                  <option value="1080p">1080p (Disabled)</option>
+                  <option value="4K">4K (2160p) (Disabled)</option>
                 </select>
+                {(videoQuality === '1080p' || videoQuality === '4K') && (
+                  <div className="badge bg-danger mt-2">
+                    <i className="bi bi-exclamation-triangle"></i> Temporarily Blocked (Server Limit)
+                  </div>
+                )}
               </div>
               <div className="col-md-6">
                 <label htmlFor="videoFormat" className="form-label">Format</label>
@@ -361,7 +366,7 @@ const DownloadForm = ({ setDownloadStatus }) => {
           <div className="d-grid gap-2">            <button 
               type="submit" 
               className="btn btn-primary"
-              disabled={loading || (isPlaylist && selectedIndices.length === 0)}
+              disabled={loading || (isPlaylist && selectedIndices.length === 0) || (mediaType === 'video' && (videoQuality === '1080p' || videoQuality === '4K'))}
             >
               {loading ? 'Processing...' : 
                isPlaylist ? 

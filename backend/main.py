@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 import os
 import uuid
@@ -8,6 +9,7 @@ from typing import Optional, List, Dict
 import shutil
 import atexit
 import time
+import asyncio
 
 from downloader import (
     download_video, download_audio, get_available_formats, 
@@ -20,9 +22,10 @@ from spotify_handler import (
 app = FastAPI(title="Media Downloader API")
 
 # Configure CORS
+frontend_urls = os.environ.get("FRONTEND_URL", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=frontend_urls,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -78,6 +81,9 @@ async def get_formats(request: FormatRequest):
 @app.post("/api/download")
 async def start_download(request: DownloadRequest, background_tasks: BackgroundTasks):
     """Start a download task in the background"""
+    if request.quality in ["1080p", "4K"]:
+        raise HTTPException(status_code=403, detail="1080p and 4K downloads are temporarily disabled due to server limits.")
+        
     task_id = str(uuid.uuid4())
     download_progress[task_id] = DownloadProgress(status="queued", progress=0)
     
@@ -172,7 +178,8 @@ async def get_download(task_id: str):
     return FileResponse(
         path=progress.file_path,
         filename=os.path.basename(progress.file_path),
-        media_type="application/octet-stream"
+        media_type="application/octet-stream",
+        background=BackgroundTask(os.remove, progress.file_path)
     )
 
 @app.post("/api/playlist-info")
@@ -227,18 +234,50 @@ async def trigger_cleanup():
     cleanup_temp_files()
     return {"status": "success", "message": "Temporary files cleaned up"}
 
+async def auto_cleanup_loop():
+    """Periodically clean up files older than 10 minutes in the tmp directory"""
+    while True:
+        try:
+            temp_dir = "tmp"
+            if os.path.exists(temp_dir):
+                current_time = time.time()
+                for root, dirs, files in os.walk(temp_dir, topdown=False):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # Check if file is older than 10 minutes (600 seconds)
+                        if current_time - os.path.getctime(file_path) > 600:
+                            try:
+                                os.remove(file_path)
+                            except:
+                                pass
+                    for dir in dirs:
+                        dir_path = os.path.join(root, dir)
+                        try:
+                            # Remove directory if empty
+                            if not os.listdir(dir_path):
+                                os.rmdir(dir_path)
+                        except:
+                            pass
+        except Exception as e:
+            print(f"Error in auto cleanup loop: {e}")
+        
+        # Sleep for 5 minutes before checking again
+        await asyncio.sleep(300)
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on startup"""
+    asyncio.create_task(auto_cleanup_loop())
+
 @app.on_event("shutdown")
 async def cleanup():
-    """Clean up temporary files on shutdown"""
-    for file in os.listdir("tmp"):
-        try:
-            os.remove(os.path.join("tmp", file))
-        except:
-            pass
+    """Clean up all temporary files on shutdown"""
+    cleanup_temp_files()
 
 if __name__ == "__main__":
     import uvicorn
     import logging
     # Set up logging to see detailed output
     logging.basicConfig(level=logging.DEBUG)
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="debug")
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True, log_level="debug")

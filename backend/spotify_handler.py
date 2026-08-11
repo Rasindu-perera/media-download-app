@@ -542,8 +542,11 @@ async def download_spotify_playlist(
     Combines multiple tracks into a zip file for convenient download.
     """
     try:
-        # Create a directory for this playlist
-        playlist_dir = os.path.join("tmp", f"spotify_playlist_{task_id}")
+        # Create a directory for this playlist with absolute path
+        curr_dir = os.getcwd()
+        base_tmp = os.path.join(curr_dir, "tmp")
+        os.makedirs(base_tmp, exist_ok=True)
+        playlist_dir = os.path.join(base_tmp, f"spotify_playlist_{task_id}")
         os.makedirs(playlist_dir, exist_ok=True)
         
         # Get actual playlist info using our get_spotify_details function
@@ -592,7 +595,8 @@ async def download_spotify_playlist(
                 ydl_opts = {
                     'format': 'bestaudio/best',
                     'outtmpl': temp_path,
-                    'quiet': True,
+                    'quiet': False,
+                    'verbose': True,
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': file_format,
@@ -633,6 +637,9 @@ async def download_spotify_playlist(
                     })
             
             except Exception as e:
+                import traceback
+                print(f"Error downloading {artist} - {title}:")
+                traceback.print_exc()
                 failed_items.append({
                     "title": f"{artist} - {title}",
                     "error": str(e)

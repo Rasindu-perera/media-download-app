@@ -36,16 +36,7 @@ async def cleanup_error_logs():
 
 @app.on_event("startup")
 async def startup_event():
-    # Write YouTube cookies from environment variable securely to disk if present
-    youtube_cookies = os.environ.get("YOUTUBE_COOKIES")
-    if youtube_cookies:
-        try:
-            with open("cookies.txt", "w") as f:
-                f.write(youtube_cookies)
-            print("Successfully wrote YOUTUBE_COOKIES to cookies.txt")
-        except Exception as e:
-            print(f"Failed to write YOUTUBE_COOKIES to cookies.txt: {e}")
-            
+    # Removed cookie handling as per Impossible Travel fix
     asyncio.create_task(cleanup_error_logs())
 
 # Configure CORS

@@ -14,11 +14,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"
 ]
-def get_cookie_file():
-    # Rely on main.py startup event to generate cookies.txt from env var
-    if os.path.exists("cookies.txt"):
-        return "cookies.txt"
-    return None
 
 import asyncio
 
@@ -42,22 +37,16 @@ def with_retry(max_retries=3, delay=3):
         return wrapper
     return decorator
 
-def apply_cookie_opts(ydl_opts):
-    ydl_opts['cookiefile'] = 'cookies.txt'
-    
+def apply_anti_bot_opts(ydl_opts):
     ydl_opts['extractor_args'] = {
-        'youtube': [
-            'player_client=ios,tv',
-            'player_skip=webpage,js'
-        ]
+        'youtube': ['player_client=android']
     }
     
-    ydl_opts['sleep_interval'] = 2
-    ydl_opts['max_sleep_interval'] = 5
+    ydl_opts['sleep_interval'] = 3
+    ydl_opts['max_sleep_interval'] = 8
     ydl_opts['geo_bypass'] = True
     ydl_opts['nocheckcertificate'] = True
-    ydl_opts['ignoreerrors'] = False
-    ydl_opts['no_warnings'] = True
+    ydl_opts['quiet'] = False
 
 
 from utils import clean_filename, get_platform, format_spotify_filename, get_id3_metadata_dict
@@ -122,7 +111,7 @@ async def get_available_formats(url: str) -> dict:
         'extract_flat': 'in_playlist', # Only extract playlist metadata, but fetch single video's formats
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
-    apply_cookie_opts(ydl_opts)
+    apply_anti_bot_opts(ydl_opts)
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -276,7 +265,7 @@ async def download_video(
             # Default for other platforms
             ydl_opts['format'] = 'best'
             
-        apply_cookie_opts(ydl_opts)
+        apply_anti_bot_opts(ydl_opts)
         
         print(f"Using download options: {ydl_opts}")
         
@@ -460,7 +449,7 @@ async def download_audio(
         'fragment_retries': 10,
         'skip_unavailable_fragments': True,
     }
-    apply_cookie_opts(ydl_opts)
+    apply_anti_bot_opts(ydl_opts)
     
     try:
         # Download the audio
@@ -551,7 +540,7 @@ async def get_playlist_details(url: str) -> dict:
         'extract_flat': 'in_playlist',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
-    apply_cookie_opts(ydl_opts)
+    apply_anti_bot_opts(ydl_opts)
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -668,7 +657,7 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
-                    apply_cookie_opts(ydl_opts)
+                    apply_anti_bot_opts(ydl_opts)
                 else:
                     # Audio download
                     quality_map = {"128k": 128, "256k": 256, "320k": 320}
@@ -689,7 +678,7 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
-                    apply_cookie_opts(ydl_opts)
+                    apply_anti_bot_opts(ydl_opts)
                 
                 # Use the video URL if available, otherwise construct from ID
                 video_url = f"https://www.youtube.com/watch?v={item['id']}"

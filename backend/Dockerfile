@@ -1,9 +1,9 @@
 # Use an official Python runtime as a parent image
 FROM python:3.12-slim
 
-# Install ffmpeg and nodejs (required by yt-dlp for JS challenges)
+# Install ffmpeg, nodejs (for yt-dlp JS challenges), and git (for pip install from github)
 RUN apt-get update && \
-    apt-get install -y ffmpeg nodejs && \
+    apt-get install -y ffmpeg nodejs git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

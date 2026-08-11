@@ -10,6 +10,7 @@ import shutil
 import atexit
 import time
 import asyncio
+import glob
 
 from downloader import (
     download_video, download_audio, get_available_formats, 
@@ -21,14 +22,29 @@ from spotify_handler import (
 
 app = FastAPI(title="Media Downloader API")
 
+# Auto-cleanup task for error logs
+async def cleanup_error_logs():
+    while True:
+        try:
+            # Delete any .txt files in tmp that are older than 10 minutes, or just blindly delete them
+            for f in glob.glob("tmp/*.txt"):
+                if os.path.exists(f):
+                    os.remove(f)
+        except Exception:
+            pass
+        await asyncio.sleep(600)  # Wait 10 minutes
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(cleanup_error_logs())
+
 # Configure CORS
-frontend_urls = os.environ.get("FRONTEND_URL", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=frontend_urls,
+    allow_origins=["*"],  # Allows all origins (Vercel, Render, local)
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
 )
 
 # Create tmp directory if it doesn't exist
@@ -56,22 +72,20 @@ class FormatResponse(BaseModel):
 class PlaylistRequest(BaseModel):
     url: str
 
-class PlaylistItem(BaseModel):
-    id: str
-    title: str
-    duration: Optional[int] = None
-    thumbnail: Optional[str] = None
-
-class PlaylistResponse(BaseModel):
-    is_playlist: bool
-    playlist_title: Optional[str] = None
-    items: List[PlaylistItem] = []
-    count: int = 0
+# Removed PlaylistItem and PlaylistResponse to allow dynamic returning
 
 @app.post("/api/formats")
 async def get_formats(request: FormatRequest):
     """Get available formats for a given URL"""
     try:
+        if is_spotify_url(request.url):
+            return {
+                'video_formats': [],
+                'audio_formats': [
+                    {'format_id': 'bestaudio', 'quality': 320, 'ext': 'mp3', 'filesize': None, 'format_note': 'Best Audio (MP3)'},
+                    {'format_id': 'bestaudio', 'quality': 256, 'ext': 'm4a', 'filesize': None, 'format_note': 'Best Audio (M4A)'}
+                ]
+            }
         formats = await get_available_formats(request.url)
         return formats
     except Exception as e:
@@ -81,9 +95,6 @@ async def get_formats(request: FormatRequest):
 @app.post("/api/download")
 async def start_download(request: DownloadRequest, background_tasks: BackgroundTasks):
     """Start a download task in the background"""
-    if request.quality in ["1080p", "4K"]:
-        raise HTTPException(status_code=403, detail="1080p and 4K downloads are temporarily disabled due to server limits.")
-        
     task_id = str(uuid.uuid4())
     download_progress[task_id] = DownloadProgress(status="queued", progress=0)
     
@@ -92,60 +103,71 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
     print(f"Format type: {request.format_type}")
     print(f"Quality: {request.quality}")
     print(f"File format: {request.file_format}")
-      # Check if it's a Spotify URL
+      
+    # Block 1080p/4K on free tier
+    if request.quality in ["1080p", "1440p", "2160p"]:
+        raise HTTPException(status_code=400, detail="1080p and 4K downloads are blocked on the free server tier.")
+        
+    # Check if the URL is a Spotify URL
     is_spotify = is_spotify_url(request.url)
     print(f"Is Spotify URL: {is_spotify}")
 
     # Handle different platforms and formats
     if is_spotify:
         if request.is_playlist:
+            # We don't download Spotify playlists directly anymore; the frontend handles it sequentially
+            raise HTTPException(status_code=400, detail="Playlists must be downloaded sequentially by the frontend.")
+        else:
+            # For Spotify single tracks, use ytsearch1:
+            from spotify_api import get_spotify_content_info
+            try:
+                info = get_spotify_content_info(request.url)
+                if info["type"] == "single":
+                    track = info["data"]
+                    search_query = f"ytsearch1:{track['artist']} {track['title']}"
+                    # Use the YouTube downloader with the search query
+                    background_tasks.add_task(
+                        download_audio,
+                        search_query,
+                        request.quality,
+                        request.file_format,
+                        task_id,
+                        download_progress
+                    )
+                else:
+                    raise Exception("Not a single track")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+    else:
+        if request.is_playlist:
             background_tasks.add_task(
-                download_spotify_playlist,
+                download_playlist,
                 request.url,
+                request.format_type,
                 request.quality,
                 request.file_format,
                 task_id,
                 download_progress,
                 request.selected_indices
             )
-        else:
+        elif request.format_type == "video":
             background_tasks.add_task(
-                download_spotify_track,
+                download_video,
                 request.url,
                 request.quality,
                 request.file_format,
                 task_id,
                 download_progress
             )
-    elif request.is_playlist:
-        background_tasks.add_task(
-            download_playlist,
-            request.url,
-            request.format_type,
-            request.quality,
-            request.file_format,
-            task_id,
-            download_progress,
-            request.selected_indices
-        )
-    elif request.format_type == "video":
-        background_tasks.add_task(
-            download_video,
-            request.url,
-            request.quality,
-            request.file_format,
-            task_id,
-            download_progress
-        )
-    else:
-        background_tasks.add_task(
-            download_audio,
-            request.url,
-            request.quality,
-            request.file_format,
-            task_id,
-            download_progress
-        )
+        else:
+            background_tasks.add_task(
+                download_audio,
+                request.url,
+                request.quality,
+                request.file_format,
+                task_id,
+                download_progress
+            )
     
     return {"task_id": task_id}
 

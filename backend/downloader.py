@@ -4,7 +4,15 @@ import yt_dlp
 import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+import random
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"
+]
 def get_cookie_file():
     # If YOUTUBE_COOKIES env var exists, write it to a temp file
     import os
@@ -29,6 +37,16 @@ def apply_cookie_opts(ydl_opts):
     # Enforce multiple fallback clients to prevent LOGIN_REQUIRED on single clients
     if 'extractor_args' not in ydl_opts:
         ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web', 'mweb', 'ios']}}
+        
+    # Add anti-bot options
+    ydl_opts['sleep_interval'] = 3
+    ydl_opts['max_sleep_interval'] = 7
+    ydl_opts['geo_bypass'] = True
+    
+    # Override user agent with a randomized one
+    if 'http_headers' not in ydl_opts:
+        ydl_opts['http_headers'] = {}
+    ydl_opts['http_headers']['User-Agent'] = random.choice(USER_AGENTS)
 
 
 from utils import clean_filename, get_platform, format_spotify_filename, get_id3_metadata_dict
@@ -543,7 +561,7 @@ async def get_playlist_details(url: str) -> dict:
                     playlist_items.append(item)
                 
                 return {
-                    'is_playlist': True,
+                    'type': 'playlist',
                     'playlist_title': info.get('title', 'Playlist'),
                     'items': playlist_items,
                     'count': len(playlist_items)
@@ -551,14 +569,13 @@ async def get_playlist_details(url: str) -> dict:
             else:
                 # It's a single video
                 return {
-                    'is_playlist': False,
-                    'items': [{
+                    'type': 'single',
+                    'data': {
                         'id': info.get('id', ''),
                         'title': info.get('title', 'Unknown Title'),
                         'duration': info.get('duration'),
                         'thumbnail': info.get('thumbnail')
-                    }],
-                    'count': 1
+                    }
                 }
     
     except Exception as e:

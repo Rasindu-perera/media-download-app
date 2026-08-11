@@ -41,9 +41,9 @@ const DownloadForm = ({ setDownloadStatus }) => {
     try {
       // First check if it's a playlist
       const playlistResponse = await axios.post(`${API_URL}/playlist-info`, { url });
-      setIsPlaylist(playlistResponse.data.is_playlist);
+      setIsPlaylist(playlistResponse.data.type === 'playlist');
       
-      if (playlistResponse.data.is_playlist) {
+      if (playlistResponse.data.type === 'playlist') {
         setPlaylistInfo(playlistResponse.data);
         // By default select all playlist items
         setSelectedIndices([...Array(playlistResponse.data.items.length).keys()]);
@@ -54,9 +54,9 @@ const DownloadForm = ({ setDownloadStatus }) => {
       setFormats(formatsResponse.data);
       
       // Extract and save video title
-      const videoTitle = playlistResponse.data.is_playlist 
+      const videoTitle = playlistResponse.data.type === 'playlist' 
         ? playlistResponse.data.playlist_title 
-        : (playlistResponse.data.items[0]?.title || 'Unknown video');
+        : (playlistResponse.data.data?.title || 'Unknown video');
       
       setVideoTitle(videoTitle);  // Add this state variable
     } catch (err) {
@@ -322,7 +322,7 @@ const DownloadForm = ({ setDownloadStatus }) => {
         <div className="alert alert-danger">{error}</div>
       )}
       
-      {playlistInfo && playlistInfo.is_playlist && (
+      {playlistInfo && playlistInfo.type === 'playlist' && (
         <div className="card mb-3">
           <div className="card-header bg-info text-white d-flex justify-content-between align-items-center">
             <h5 className="mb-0">
@@ -419,12 +419,13 @@ const DownloadForm = ({ setDownloadStatus }) => {
                 >
                   <option value="480p">480p</option>
                   <option value="720p">720p</option>
-                  <option value="1080p">1080p (Disabled)</option>
-                  <option value="4K">4K (2160p) (Disabled)</option>
+                  <option value="1080p" disabled>1080p (Blocked - Free Server Limit)</option>
+                  <option value="1440p" disabled>1440p (Blocked - Free Server Limit)</option>
+                  <option value="2160p" disabled>4K (2160p) (Blocked - Free Server Limit)</option>
                 </select>
-                {(videoQuality === '1080p' || videoQuality === '4K') && (
+                {(videoQuality === '1080p' || videoQuality === '1440p' || videoQuality === '2160p') && (
                   <div className="badge bg-danger mt-2">
-                    <i className="bi bi-exclamation-triangle"></i> Temporarily Blocked (Server Limit)
+                    <i className="bi bi-exclamation-triangle"></i> Blocked (Free Server Limit)
                   </div>
                 )}
               </div>

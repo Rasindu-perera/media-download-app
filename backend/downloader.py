@@ -43,26 +43,21 @@ def with_retry(max_retries=3, delay=3):
     return decorator
 
 def apply_cookie_opts(ydl_opts):
-    cookie_file = get_cookie_file()
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
-        
+    ydl_opts['cookiefile'] = 'cookies.txt'
+    
     ydl_opts['extractor_args'] = {
         'youtube': [
-            'player_client=ios,android,tv',
+            'player_client=ios,tv',
             'player_skip=webpage,js'
         ]
     }
     
-    ydl_opts['legacyserver'] = False
+    ydl_opts['sleep_interval'] = 2
+    ydl_opts['max_sleep_interval'] = 5
+    ydl_opts['geo_bypass'] = True
     ydl_opts['nocheckcertificate'] = True
     ydl_opts['ignoreerrors'] = False
-    ydl_opts['no_warnings'] = False
-        
-    # Override user agent with a randomized one
-    if 'http_headers' not in ydl_opts:
-        ydl_opts['http_headers'] = {}
-    ydl_opts['http_headers']['User-Agent'] = random.choice(USER_AGENTS)
+    ydl_opts['no_warnings'] = True
 
 
 from utils import clean_filename, get_platform, format_spotify_filename, get_id3_metadata_dict

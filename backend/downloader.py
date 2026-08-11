@@ -17,11 +17,17 @@ def get_cookie_file():
         return "cookies.txt"
     return None
 
+
 def apply_cookie_opts(ydl_opts):
     cookie_file = get_cookie_file()
     if cookie_file:
         ydl_opts['cookiefile'] = cookie_file
         ydl_opts['js_runtimes'] = {'node': {}}
+    
+    # Enforce Android client bypass to avoid Web player bot detection
+    if 'extractor_args' not in ydl_opts:
+        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android']}}
+
 
 from utils import clean_filename, get_platform, format_spotify_filename, get_id3_metadata_dict
 

@@ -90,25 +90,7 @@ const DownloadForm = ({ setDownloadStatus }) => {
     });
   };
   
-  const downloadFileAsBlob = async (taskId, filename) => {
-    try {
-      const response = await axios.get(`${API_URL}/download/${taskId}`, {
-        responseType: 'blob'
-      });
-      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode.removeChild(link);
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (err) {
-      console.error("Blob download failed:", err);
-      throw err;
-    }
-  };
-
+  
   const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
   const startDownload = async (e) => {
@@ -124,6 +106,7 @@ const DownloadForm = ({ setDownloadStatus }) => {
     if (!isPlaylist) {
       // Single video download logic
       try {
+        setDownloadStatus({ taskId: 'cobalt', status: 'downloading', progress: 50, error: 'Requesting direct link from Cobalt API...' });
         const response = await axios.post(`${API_URL}/download`, {
           url,
           format_type: mediaType,
@@ -133,30 +116,12 @@ const DownloadForm = ({ setDownloadStatus }) => {
           selected_indices: null
         });
         
-        const taskId = response.data.task_id;
-        setDownloadStatus({ taskId, status: 'queued', progress: 0 });
-        
-        const pollInterval = setInterval(async () => {
-          try {
-            const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
-            const { status, progress, error, file_path } = progressResponse.data;
-            
-            setDownloadStatus({ taskId, status, progress, error, filePath: file_path });
-            
-            if (status === 'completed') {
-              clearInterval(pollInterval);
-              const safeTitle = videoTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
-              const filename = `${safeTitle}.${fileFormat}`;
-              await downloadFileAsBlob(taskId, filename);
-            } else if (status === 'error') {
-              clearInterval(pollInterval);
-              setError(`Download failed: ${error}`);
-            }
-          } catch (err) {
-            clearInterval(pollInterval);
-            setError(`Failed to get progress: ${err.message}`);
-          }
-        }, 1000);
+        if (response.data.url) {
+            setDownloadStatus({ taskId: 'cobalt', status: 'completed', progress: 100, error: null });
+            window.location.href = response.data.url;
+        } else {
+            setError('Failed to get download URL');
+        }
       } catch (err) {
         setError(`Failed to start download: ${err.response?.data?.detail || err.message}`);
         setLoading(false);
@@ -186,12 +151,15 @@ const DownloadForm = ({ setDownloadStatus }) => {
         });
         
         try {
-          let itemUrl = url;
-          if (url.includes('spotify.com')) {
-            itemUrl = `ytsearch1:${item.artist || ''} ${item.title}`.trim();
-          } else if (item.id) {
-            itemUrl = `https://youtube.com/watch?v=${item.id}`;
-          }
+          const itemUrl = item.id; // item.id is the direct YouTube URL returned by backend
+          
+          setDownloadStatus({
+            taskId: 'queue',
+            status: 'downloading',
+            progress: 50,
+            error: `Requesting Cobalt link for track ${i + 1} of ${itemsToDownload.length}: ${item.title}`
+          });
+
           const response = await axios.post(`${API_URL}/download`, {
             url: itemUrl,
             format_type: mediaType,
@@ -201,40 +169,14 @@ const DownloadForm = ({ setDownloadStatus }) => {
             selected_indices: null
           });
           
-          const taskId = response.data.task_id;
+          if (response.data.url) {
+              window.open(response.data.url, '_blank');
+              successCount++;
+          } else {
+              throw new Error('No URL returned from backend');
+          }
           
-          // Poll until completed
-          await new Promise((resolve, reject) => {
-            const pollInterval = setInterval(async () => {
-              try {
-                const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
-                const { status, progress, error } = progressResponse.data;
-                
-                setDownloadStatus({
-                  taskId: 'queue',
-                  status: 'downloading',
-                  progress: progress,
-                  error: `Downloading track ${i + 1} of ${itemsToDownload.length}: ${item.title} (${Math.round(progress)}%)`
-                });
-                
-                if (status === 'completed') {
-                  clearInterval(pollInterval);
-                  await downloadFileAsBlob(taskId, filename);
-                  resolve();
-                } else if (status === 'error') {
-                  clearInterval(pollInterval);
-                  reject(new Error(error));
-                }
-              } catch (err) {
-                clearInterval(pollInterval);
-                reject(err);
-              }
-            }, 1000);
-          });
-          
-          successCount++;
-          
-          // Add anti-ban delay (3-5 seconds)
+          // Add anti-ban delay strictly to 4 seconds
           if (i < itemsToDownload.length - 1) {
             setDownloadStatus({
               taskId: 'queue',

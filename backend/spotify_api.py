@@ -47,11 +47,11 @@ def scrape_spotify_embed(content_type: str, content_id: str) -> Dict:
         raise Exception(f"Failed to fetch Spotify embed page: {response.status_code}")
         
     match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', response.text, re.DOTALL)
-    if not match:
-        raise Exception("Could not find metadata inside Spotify embed page")
-        
-    data = json.loads(match.group(1))
     
+    if match:
+        data = json.loads(match.group(1))
+    else:
+        raise ValueError("Failed to extract Spotify data: No regex match found.")
     try:
         entity = data['props']['pageProps']['state']['data']['entity']
     except KeyError:

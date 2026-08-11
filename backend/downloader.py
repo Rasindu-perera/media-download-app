@@ -36,12 +36,13 @@ def apply_cookie_opts(ydl_opts):
     
     # Enforce multiple fallback clients to prevent LOGIN_REQUIRED on single clients
     if 'extractor_args' not in ydl_opts:
-        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web', 'mweb', 'ios']}}
+        ydl_opts['extractor_args'] = {'youtube': ['player_client=web', 'player_client=android', 'player_client=ios']}
         
-    # Add anti-bot options
-    ydl_opts['sleep_interval'] = 3
-    ydl_opts['max_sleep_interval'] = 7
+    # Add robust anti-bot options
+    ydl_opts['sleep_interval'] = 2
+    ydl_opts['max_sleep_interval'] = 5
     ydl_opts['geo_bypass'] = True
+    ydl_opts['impersonate'] = 'chrome'
     
     # Override user agent with a randomized one
     if 'http_headers' not in ydl_opts:

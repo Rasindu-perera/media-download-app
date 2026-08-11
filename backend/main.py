@@ -178,7 +178,8 @@ async def get_download(task_id: str):
     return FileResponse(
         path=progress.file_path,
         filename=os.path.basename(progress.file_path),
-        media_type="application/octet-stream"
+        media_type="application/octet-stream",
+        background=BackgroundTask(os.remove, progress.file_path)
     )
 
 @app.post("/api/playlist-info")

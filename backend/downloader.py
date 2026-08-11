@@ -4,6 +4,25 @@ import yt_dlp
 import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+
+def get_cookie_file():
+    # If YOUTUBE_COOKIES env var exists, write it to a temp file
+    import os
+    if os.environ.get("YOUTUBE_COOKIES"):
+        with open("temp_cookies.txt", "w") as f:
+            f.write(os.environ.get("YOUTUBE_COOKIES"))
+        return "temp_cookies.txt"
+    # Otherwise fallback to local file
+    if os.path.exists("cookies.txt"):
+        return "cookies.txt"
+    return None
+
+def apply_cookie_opts(ydl_opts):
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+        ydl_opts['js_runtimes'] = {'node': {}}
+
 from utils import clean_filename, get_platform, format_spotify_filename, get_id3_metadata_dict
 
 @dataclass
@@ -62,9 +81,7 @@ async def get_available_formats(url: str) -> dict:
         'no_warnings': True,
         'skip_download': True,
     }
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
-        ydl_opts['js_runtimes'] = {'node': {}}
+    apply_cookie_opts(ydl_opts)
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -200,9 +217,7 @@ async def download_video(
             # Default for other platforms
             ydl_opts['format'] = 'best'
             
-        if os.path.exists("cookies.txt"):
-            ydl_opts['cookiefile'] = "cookies.txt"
-            ydl_opts['js_runtimes'] = {'node': {}}
+        apply_cookie_opts(ydl_opts)
         
         print(f"Using download options: {ydl_opts}")
         
@@ -385,9 +400,7 @@ async def download_audio(
         'fragment_retries': 10,
         'skip_unavailable_fragments': True,
     }
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
-        ydl_opts['js_runtimes'] = {'node': {}}
+    apply_cookie_opts(ydl_opts)
     
     try:
         # Download the audio
@@ -476,9 +489,7 @@ async def get_playlist_details(url: str) -> dict:
         'extract_flat': True,  # Don't extract individual videos in the playlist
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
-        ydl_opts['js_runtimes'] = {'node': {}}
+    apply_cookie_opts(ydl_opts)
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -592,9 +603,7 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
-                    if os.path.exists("cookies.txt"):
-                        ydl_opts['cookiefile'] = "cookies.txt"
-                        ydl_opts['js_runtimes'] = {'node': {}}
+                    apply_cookie_opts(ydl_opts)
                 else:
                     # Audio download
                     quality_map = {"128k": 128, "256k": 256, "320k": 320}
@@ -615,9 +624,7 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
-                    if os.path.exists("cookies.txt"):
-                        ydl_opts['cookiefile'] = "cookies.txt"
-                        ydl_opts['js_runtimes'] = {'node': {}}
+                    apply_cookie_opts(ydl_opts)
                 
                 # Use the video URL if available, otherwise construct from ID
                 video_url = f"https://www.youtube.com/watch?v={item['id']}"

@@ -118,7 +118,13 @@ const DownloadForm = ({ setDownloadStatus }) => {
         
         if (response.data.url) {
             setDownloadStatus({ taskId: 'cobalt', status: 'completed', progress: 100, error: null });
-            window.location.href = response.data.url;
+            const link = document.createElement('a');
+            link.href = response.data.url;
+            link.target = '_blank';
+            link.download = '';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         } else {
             setError('Failed to get download URL');
         }
@@ -170,7 +176,13 @@ const DownloadForm = ({ setDownloadStatus }) => {
           });
           
           if (response.data.url) {
-              window.open(response.data.url, '_blank');
+              const link = document.createElement('a');
+              link.href = response.data.url;
+              link.target = '_blank';
+              link.download = '';
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
               successCount++;
           } else {
               throw new Error('No URL returned from backend');
@@ -280,6 +292,10 @@ const DownloadForm = ({ setDownloadStatus }) => {
             </span>
           </div>
           <div className="card-body">
+            <div className="alert alert-info alert-sm" role="alert" style={{ fontSize: '0.9rem' }}>
+              <i className="bi bi-info-circle-fill me-2"></i>
+              Note: Your browser may ask for permission to download multiple files. Please click 'Allow' to let the playlist download automatically.
+            </div>
             <div className="d-flex justify-content-between mb-3">
               <button 
                 type="button" 
@@ -366,15 +382,10 @@ const DownloadForm = ({ setDownloadStatus }) => {
                 >
                   <option value="480p">480p</option>
                   <option value="720p">720p</option>
-                  <option value="1080p" disabled>1080p (Blocked - Free Server Limit)</option>
-                  <option value="1440p" disabled>1440p (Blocked - Free Server Limit)</option>
-                  <option value="2160p" disabled>4K (2160p) (Blocked - Free Server Limit)</option>
+                  <option value="1080p">1080p</option>
+                  <option value="1440p">1440p</option>
+                  <option value="2160p">4K (2160p)</option>
                 </select>
-                {(videoQuality === '1080p' || videoQuality === '1440p' || videoQuality === '2160p') && (
-                  <div className="badge bg-danger mt-2">
-                    <i className="bi bi-exclamation-triangle"></i> Blocked (Free Server Limit)
-                  </div>
-                )}
               </div>
               <div className="col-md-6">
                 <label htmlFor="videoFormat" className="form-label">Format</label>
@@ -420,10 +431,11 @@ const DownloadForm = ({ setDownloadStatus }) => {
             </div>
           )}
           
-          <div className="d-grid gap-2">            <button 
+          <div className="d-grid gap-2">            
+            <button 
               type="submit" 
               className="btn btn-primary"
-              disabled={loading || (isPlaylist && selectedIndices.length === 0) || (mediaType === 'video' && (videoQuality === '1080p' || videoQuality === '4K'))}
+              disabled={loading || (isPlaylist && selectedIndices.length === 0)}
             >
               {loading ? 'Processing...' : 
                isPlaylist ? 

@@ -80,6 +80,9 @@ async def get_available_formats(url: str) -> dict:
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
+        'ignoreerrors': True,
+        'extract_flat': True, # Only extract playlist metadata, don't fetch every video's formats
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
     apply_cookie_opts(ydl_opts)
     
@@ -87,7 +90,24 @@ async def get_available_formats(url: str) -> dict:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # Filter and categorize formats
+            if not info:
+                raise Exception("Failed to extract info from the URL. Please check the link and try again.")
+                
+            # If it's a playlist, return standard generic formats to the UI instantly
+            if 'entries' in info:
+                return {
+                    'video_formats': [
+                        {'format_id': 'best', 'quality': '1080p', 'ext': 'mp4', 'filesize': None, 'format_note': '1080p (Best)'},
+                        {'format_id': 'best', 'quality': '720p', 'ext': 'mp4', 'filesize': None, 'format_note': '720p'},
+                        {'format_id': 'best', 'quality': '480p', 'ext': 'mp4', 'filesize': None, 'format_note': '480p'}
+                    ],
+                    'audio_formats': [
+                        {'format_id': 'bestaudio', 'quality': 320, 'ext': 'mp3', 'filesize': None, 'format_note': 'Best Audio (MP3)'},
+                        {'format_id': 'bestaudio', 'quality': 256, 'ext': 'm4a', 'filesize': None, 'format_note': 'Best Audio (M4A)'}
+                    ]
+                }
+            
+            # Filter and categorize formats for a single video
             video_formats = []
             audio_formats = []
             
@@ -486,6 +506,8 @@ async def get_playlist_details(url: str) -> dict:
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
+        'ignoreerrors': True,
+        'extract_flat': 'in_playlist',
         'extract_flat': True,  # Don't extract individual videos in the playlist
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }

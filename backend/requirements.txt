@@ -9,3 +9,6 @@ requests>=2.31.0
 httpx==0.27.0
 Pillow>=10.3.0
 youtube-search-python>=1.6.6
+# pytubefix: maintained pytube fork used to extract YouTube stream URLs.
+# Handles ALL YouTube & Spotify-resolved downloads (no Cobalt needed for YT).
+pytubefix>=8.0.0

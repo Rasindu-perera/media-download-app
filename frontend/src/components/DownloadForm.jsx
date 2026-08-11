@@ -186,7 +186,12 @@ const DownloadForm = ({ setDownloadStatus }) => {
         });
         
         try {
-          const itemUrl = item.id ? (playlistInfo.platform === 'spotify' ? `https://open.spotify.com/track/${item.id}` : `https://youtube.com/watch?v=${item.id}`) : url;
+          let itemUrl = url;
+          if (playlistInfo.platform === 'spotify') {
+            itemUrl = `ytsearch1:${item.artist || ''} ${item.title}`.trim();
+          } else if (item.id) {
+            itemUrl = `https://youtube.com/watch?v=${item.id}`;
+          }
           const response = await axios.post(`${API_URL}/download`, {
             url: itemUrl,
             format_type: mediaType,

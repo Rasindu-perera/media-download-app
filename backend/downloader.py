@@ -14,13 +14,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"
 ]
 def get_cookie_file():
-    # If YOUTUBE_COOKIES env var exists, write it to a temp file
-    import os
-    if os.environ.get("YOUTUBE_COOKIES"):
-        with open("temp_cookies.txt", "w") as f:
-            f.write(os.environ.get("YOUTUBE_COOKIES"))
-        return "temp_cookies.txt"
-    # Otherwise fallback to local file
+    # Rely on main.py startup event to generate cookies.txt from env var
     if os.path.exists("cookies.txt"):
         return "cookies.txt"
     return None
@@ -42,7 +36,6 @@ def apply_cookie_opts(ydl_opts):
     ydl_opts['sleep_interval'] = 2
     ydl_opts['max_sleep_interval'] = 5
     ydl_opts['geo_bypass'] = True
-    ydl_opts['impersonate'] = 'chrome'
     
     # Override user agent with a randomized one
     if 'http_headers' not in ydl_opts:

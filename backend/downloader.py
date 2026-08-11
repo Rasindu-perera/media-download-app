@@ -62,6 +62,8 @@ async def get_available_formats(url: str) -> dict:
         'no_warnings': True,
         'skip_download': True,
     }
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -196,6 +198,9 @@ async def download_video(
         else:
             # Default for other platforms
             ydl_opts['format'] = 'best'
+            
+        if os.path.exists("cookies.txt"):
+            ydl_opts['cookiefile'] = "cookies.txt"
         
         print(f"Using download options: {ydl_opts}")
         
@@ -332,7 +337,10 @@ async def download_audio(
     custom_filename = None
     
     try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
+        ydl_opts_info = {'quiet': True, 'skip_download': True}
+        if os.path.exists("cookies.txt"):
+            ydl_opts_info['cookiefile'] = "cookies.txt"
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
             
             # Display track information
@@ -375,6 +383,8 @@ async def download_audio(
         'fragment_retries': 10,
         'skip_unavailable_fragments': True,
     }
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
     
     try:
         # Download the audio
@@ -463,6 +473,8 @@ async def get_playlist_details(url: str) -> dict:
         'extract_flat': True,  # Don't extract individual videos in the playlist
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -576,6 +588,8 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
+                    if os.path.exists("cookies.txt"):
+                        ydl_opts['cookiefile'] = "cookies.txt"
                 else:
                     # Audio download
                     quality_map = {"128k": 128, "256k": 256, "320k": 320}
@@ -596,6 +610,8 @@ async def download_playlist(
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
+                    if os.path.exists("cookies.txt"):
+                        ydl_opts['cookiefile'] = "cookies.txt"
                 
                 # Use the video URL if available, otherwise construct from ID
                 video_url = f"https://www.youtube.com/watch?v={item['id']}"

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
@@ -35,18 +35,12 @@ class PlaylistRequest(BaseModel):
     url: str
 
 @app.post("/api/formats")
-async def get_formats(request: FormatRequest):
+async def get_formats(request: Request):
     """Get available formats for a given URL (Dummy endpoint for Cobalt)"""
     return {
-        'video_formats': [
-            {'format_id': '1080p', 'quality': '1080p', 'ext': 'mp4', 'filesize': None, 'format_note': '1080p (Best)'},
-            {'format_id': '720p', 'quality': '720p', 'ext': 'mp4', 'filesize': None, 'format_note': '720p'},
-            {'format_id': '480p', 'quality': '480p', 'ext': 'mp4', 'filesize': None, 'format_note': '480p'}
-        ],
-        'audio_formats': [
-            {'format_id': 'bestaudio', 'quality': 320, 'ext': 'mp3', 'filesize': None, 'format_note': 'Best Audio (MP3)'},
-            {'format_id': 'bestaudio', 'quality': 256, 'ext': 'm4a', 'filesize': None, 'format_note': 'Best Audio (M4A)'}
-        ]
+        "status": "success",
+        "video": ["max", "1080", "720", "480"],
+        "audio": ["320k", "256k", "128k"]
     }
 
 @app.post("/api/download")

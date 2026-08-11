@@ -81,7 +81,7 @@ async def get_available_formats(url: str) -> dict:
         'no_warnings': True,
         'skip_download': True,
         'ignoreerrors': True,
-        'extract_flat': True, # Only extract playlist metadata, don't fetch every video's formats
+        'extract_flat': 'in_playlist', # Only extract playlist metadata, but fetch single video's formats
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
     apply_cookie_opts(ydl_opts)

@@ -16,6 +16,7 @@ from downloader import (
 from spotify_handler import (
     is_spotify_url, get_spotify_details, download_spotify_track, download_spotify_playlist
 )
+from spotify_direct import get_spotify_stream_url
 
 app = FastAPI(title="Media Downloader API")
 
@@ -48,6 +49,9 @@ class FormatRequest(BaseModel):
 
 class FormatResponse(BaseModel):
     video_formats: List[dict]
+
+class SpotifyStreamRequest(BaseModel):
+    url: str
     audio_formats: List[dict]
 
 class PlaylistRequest(BaseModel):
@@ -69,6 +73,16 @@ class PlaylistResponse(BaseModel):
 def get_formats(request: FormatRequest):
     """Get available formats for a given URL"""
     try:
+        if "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
+            return {
+                "video_formats": [
+                    {"quality": "HD No Watermark", "format": "mp4", "note": "(Direct)"}
+                ],
+                "audio_formats": [
+                    {"quality": "Original Audio", "format": "mp3", "note": "(Direct)"}
+                ]
+            }
+            
         formats = get_available_formats(request.url)
         return formats
     except Exception as e:
@@ -111,6 +125,18 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
                 task_id,
                 download_progress
             )
+    elif "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
+        import requests
+        try:
+            resp = requests.get(f"https://www.tikwm.com/api/?url={request.url}")
+            data = resp.json()
+            if request.format_type == "audio":
+                media_url = data['data']['music']
+            else:
+                media_url = data['data']['play']
+            return {"url": media_url}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
     elif request.is_playlist:
         background_tasks.add_task(
             download_playlist,
@@ -151,6 +177,17 @@ async def get_progress(task_id: str):
     
     return download_progress[task_id]
 
+@app.post("/api/spotify/direct-stream")
+async def spotify_direct_stream(request: SpotifyStreamRequest):
+    """
+    Directly bypass downloading and get the YouTube audio stream URL for a Spotify link.
+    """
+    try:
+        stream_url = get_spotify_stream_url(request.url)
+        return {"stream_url": stream_url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/api/download/{task_id}")
 async def get_download(task_id: str):
     """Get the downloaded file"""
@@ -186,6 +223,19 @@ def get_playlist_info(request: PlaylistRequest):
             # Use Spotify-specific function to handle DRM limitations
             playlist_info = get_spotify_details(request.url)
             return playlist_info
+        elif "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
+            import requests
+            resp = requests.get(f"https://www.tikwm.com/api/?url={request.url}")
+            data = resp.json()
+            title = data['data'].get('title', 'TikTok Video')
+            return {
+                "title": title, 
+                "type": "video", 
+                "url": request.url,
+                "is_playlist": False,
+                "items": [{"id": "tiktok", "title": title}],
+                "count": 1
+            }
         else:
             # Use regular function for other platforms
             playlist_info = get_playlist_details(request.url)

@@ -111,6 +111,18 @@ const DownloadForm = ({ setDownloadStatus }) => {
         selected_indices: isPlaylist ? selectedIndices : null
       });
       
+      if (response.data.url) {
+        // Direct download URL bypasses background task polling
+        window.location.href = response.data.url;
+        setDownloadStatus({
+          taskId: 'direct',
+          status: 'completed',
+          progress: 100
+        });
+        setLoading(false);
+        return;
+      }
+      
       const taskId = response.data.task_id;
       
       // Start polling for progress

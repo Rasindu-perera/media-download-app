@@ -7,10 +7,20 @@ a YouTube search as a workaround for DRM protection in Spotify.
 
 import os
 import re
+import sys
 import shutil
 from typing import Dict, List, Optional, Tuple
 import requests
 import yt_dlp
+
+# Fix for yt-dlp UnicodeEncodeError on Windows console
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from downloader import DownloadProgress
 from spotify_api import get_spotify_content_info
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC
@@ -62,27 +72,90 @@ def get_spotify_details(url: str) -> dict:
         if not content_type or not content_id:
             raise ValueError("Unable to extract Spotify information from URL")
             
+        # Try oEmbed fallback to get real title and thumbnail
+        try:
+            import urllib.request
+            import json
+            oembed_url = f"https://open.spotify.com/oembed?url={url}"
+            req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                title = data.get("title", f"Spotify {content_type.title()}")
+                thumbnail = data.get("thumbnail_url")
+                
+            if content_type == 'track':
+                return {
+                    'is_playlist': False,
+                    'platform': 'spotify',
+                    'items': [{
+                        'id': content_id,
+                        'title': title,
+                        'duration': 0,
+                        'artist': "Spotify Track",
+                        'album': "Spotify",
+                        'thumbnail': thumbnail
+                    }]
+                }
+            # For playlists/albums, we keep the title but fall through to embed scraping to get the tracks
+        except Exception as oembed_err:
+            print(f"oEmbed fallback also failed: {oembed_err}")
+            
         if content_type in ['playlist', 'album']:
-            # Create a placeholder response
+            try:
+                import re
+                import urllib.request
+                import json
+                
+                embed_url = f"https://open.spotify.com/embed/{content_type}/{content_id}"
+                req = urllib.request.Request(embed_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req) as response:
+                    html = response.read().decode('utf-8')
+                    
+                match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                if match:
+                    data = json.loads(match.group(1))
+                    entity = data['props']['pageProps']['state']['data']['entity']
+                    playlist_title = entity.get('name', f"Spotify {content_type.title()}")
+                    track_list = entity.get('trackList', [])
+                    
+                    real_tracks = []
+                    for i, t in enumerate(track_list):
+                        # Extract artist, title, duration
+                        t_title = t.get('title', f"Track {i+1}")
+                        t_subtitle = t.get('subtitle', "Unknown Artist")
+                        t_duration = t.get('duration', 0) // 1000
+                        t_id = t.get('uri', '').split(':')[-1] or f"track_{i}"
+                        
+                        real_tracks.append({
+                            'id': t_id,
+                            'title': t_title,
+                            'duration': t_duration,
+                            'artist': t_subtitle,
+                            'album': playlist_title
+                        })
+                        
+                    return {
+                        'is_playlist': True,
+                        'platform': 'spotify',
+                        'playlist_title': playlist_title,
+                        'items': real_tracks,
+                        'count': len(real_tracks)
+                    }
+            except Exception as e:
+                print(f"Embed scraping failed: {e}")
+                
+            # Fallback if embed scraping fails
             playlist_title = f"Spotify {content_type.title()} ({content_id[:8]})"
             
             # Generate placeholder tracks with descriptive names
             mock_tracks = []
             popular_tracks = [
                 {"title": "Imagine", "artist": "John Lennon", "album": "Imagine", "duration": 183},
-                {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354},
-                {"title": "Shape of You", "artist": "Ed Sheeran", "album": "÷", "duration": 233},
-                {"title": "Billie Jean", "artist": "Michael Jackson", "album": "Thriller", "duration": 294},
-                {"title": "Hotel California", "artist": "Eagles", "album": "Hotel California", "duration": 391},
-                {"title": "Rolling in the Deep", "artist": "Adele", "album": "21", "duration": 228},
-                {"title": "Sweet Child o' Mine", "artist": "Guns N' Roses", "album": "Appetite for Destruction", "duration": 356},
-                {"title": "Uptown Funk", "artist": "Mark Ronson ft. Bruno Mars", "album": "Uptown Special", "duration": 270},
-                {"title": "Smells Like Teen Spirit", "artist": "Nirvana", "album": "Nevermind", "duration": 302},
-                {"title": "Despacito", "artist": "Luis Fonsi ft. Daddy Yankee", "album": "VIDA", "duration": 229}
+                {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354}
             ]
             
-            # Use at most 10 tracks
-            num_tracks = min(10, len(popular_tracks))
+            # Use at most 2 tracks for absolute fallback
+            num_tracks = min(2, len(popular_tracks))
             for i in range(num_tracks):
                 track = popular_tracks[i]
                 mock_tracks.append({
@@ -364,24 +437,37 @@ def download_spotify_track(
                 'preferredcodec': file_format,
                 'preferredquality': str(bitrate),
             }],
-            'quiet': False,
-            'verbose': True,  # Enable verbose output for debugging
+            'quiet': True,
+            'verbose': False,
             'retries': 10,    # Increase retries
             'fragment_retries': 10,
             'ignoreerrors': True,  # Try to continue if there's an error
-            'no_warnings': False,  # Show warnings
-            'noprogress': False,   # Show progress
+            'no_warnings': True,
+            'noprogress': True,
         }
         
         # Expected output file with extension (using absolute path)
         expected_output = f"{base_output}.{file_format}"
         
-        # Try up to 3 different search strategies if needed
-        search_strategies = [
+        # Try up to 4 different search strategies if needed
+        search_strategies = []
+        
+        # Strategy 1: Use youtubesearchpython to get the exact direct video link (highly accurate)
+        try:
+            from youtubesearchpython import VideosSearch
+            videos_search = VideosSearch(f"{artist} {track_title}", limit=1)
+            results = videos_search.result()
+            if results and results.get("result"):
+                yt_url = results["result"][0]["link"]
+                search_strategies.append(yt_url)
+        except Exception:
+            pass
+            
+        search_strategies.extend([
             search_query,
             f"ytsearch:{artist} {track_title} lyrics",
             f"ytsearch:{artist} {track_title} official audio"
-        ]
+        ])
         
         download_success = False
         error_messages = []
@@ -586,8 +672,24 @@ def download_spotify_playlist(
             temp_path = os.path.join(playlist_dir, f"temp_{index}")
             
             try:
-                # Since we can't download directly from Spotify, search YouTube instead
-                search_query = create_youtube_search_query(artist, title, track.get('album'))
+                # First try to get direct YouTube link with youtubesearchpython for best accuracy
+                search_strategies = []
+                try:
+                    from youtubesearchpython import VideosSearch
+                    videos_search = VideosSearch(f"{artist} {title}", limit=1)
+                    results = videos_search.result()
+                    if results and results.get("result"):
+                        yt_url = results["result"][0]["link"]
+                        search_strategies.append(yt_url)
+                except Exception as e:
+                    print(f"youtubesearchpython failed in playlist: {e}")
+                
+                # Fallback to standard ytsearch without album to prevent confusing youtube
+                search_query = create_youtube_search_query(artist, title, None)
+                search_strategies.extend([
+                    search_query,
+                    f"ytsearch:{artist} {title} audio official"
+                ])
                 
                 ydl_opts = {
                     'format': 'bestaudio/best',
@@ -600,11 +702,20 @@ def download_spotify_playlist(
                     }],
                     'retries': 3,
                     'fragment_retries': 3,
+                    'ignoreerrors': True,
+                    'no_warnings': True,
                 }
                 
-                # Download via YouTube search
+                download_success = False
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([search_query])
+                    for strategy in search_strategies:
+                        try:
+                            info = ydl.extract_info(strategy, download=True)
+                            if info and ('entries' in info or 'id' in info):
+                                download_success = True
+                                break
+                        except Exception:
+                            continue
                 
                 # Check if the file was downloaded
                 expected_temp = f"{temp_path}.{file_format}"
@@ -640,7 +751,7 @@ def download_spotify_playlist(
         
         # Create a report file
         report_path = os.path.join(playlist_dir, "download_report.txt")
-        with open(report_path, "w") as f:
+        with open(report_path, "w", encoding='utf-8') as f:
             f.write(f"Spotify Playlist: {playlist_title}\n")
             f.write(f"Total tracks: {len(tracks)}\n")
             f.write(f"Successfully downloaded: {success_count}\n")

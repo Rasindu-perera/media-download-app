@@ -24,8 +24,8 @@ const ProgressBar = ({ downloadStatus }) => {
       case 'queued':
         return 'Preparing download...';
       case 'downloading':
-        // Check if there's item-specific or queue information in the error field
-        if (error && (error.startsWith('Downloading ') || error.startsWith('Waiting '))) {
+        // Check if there's item-specific information in the error field
+        if (error && error.startsWith('Downloading ')) {
           return error;
         }
         return `Downloading: ${Math.round(progress)}%`;
@@ -54,15 +54,17 @@ const ProgressBar = ({ downloadStatus }) => {
         />
       </div>
       
-      {status === 'completed' && downloadStatus.taskId !== 'queue_done' && (
+      {status === 'completed' && (
         <div className="mt-3 text-center">
           <p className="text-success mb-2">Your download has completed!</p>
-        </div>
-      )}
-      
-      {status === 'completed' && downloadStatus.taskId === 'queue_done' && (
-        <div className="mt-3 text-center">
-          <p className="text-success mb-2">{error || "Your playlist has finished downloading!"}</p>
+          <a 
+            href={`http://localhost:8000/api/download/${downloadStatus.taskId}`}
+            className="btn btn-success"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Download Again
+          </a>
         </div>
       )}
     </div>

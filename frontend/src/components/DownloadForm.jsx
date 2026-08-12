@@ -1,34 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
-
-/**
- * Trigger a browser file download by routing the URL through our /api/proxy
- * endpoint. This makes the download same-origin, which means:
- *   1. The link.download attribute is respected (file is saved to disk).
- *   2. The browser shows the "allow multiple downloads" prompt for playlists.
- */
-function triggerDownload(rawUrl, filename) {
-  const proxyUrl =
-    `${API_URL}/proxy?url=${encodeURIComponent(rawUrl)}&filename=${encodeURIComponent(filename)}`;
-  const link = document.createElement('a');
-  link.href = proxyUrl;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-}
-
-/** Build a safe filename from a title + extension. */
-function buildFilename(title, ext) {
-  const safe = (title || 'download')
-    .replace(/[^\w\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .substring(0, 60);
-  return `${safe}.${ext}`;
-}
+const API_URL = 'http://localhost:8000/api';
 
 const DownloadForm = ({ setDownloadStatus }) => {
   const [url, setUrl] = useState('');
@@ -45,320 +18,230 @@ const DownloadForm = ({ setDownloadStatus }) => {
   const [selectedIndices, setSelectedIndices] = useState([]);
   const [selectAll, setSelectAll] = useState(true);
   const [videoTitle, setVideoTitle] = useState('');
-  const [videoAuthor, setVideoAuthor] = useState('');
-
-  const handleUrlChange = (e) => {
+    const handleUrlChange = (e) => {
     const newUrl = e.target.value;
     setUrl(newUrl);
     setFormats(null);
     setPlaylistInfo(null);
     setIsPlaylist(false);
-    setVideoTitle('');
-    setVideoAuthor('');
-    // Auto-switch to audio for Spotify URLs
+    
+    // Auto-switch to audio type for Spotify URLs
     if (newUrl.includes('spotify.com') && mediaType === 'video') {
       setMediaType('audio');
     }
   };
-
+  
   const fetchFormats = async (e) => {
     e.preventDefault();
     if (!url) return;
-
+    
     setLoading(true);
     setError(null);
-
+    
     try {
-      // Check playlist / single info
+      // First check if it's a playlist
       const playlistResponse = await axios.post(`${API_URL}/playlist-info`, { url });
-      const pData = playlistResponse.data;
-
-      setIsPlaylist(pData.type === 'playlist');
-
-      if (pData.type === 'playlist') {
-        setPlaylistInfo(pData);
-        setSelectedIndices([...Array(pData.items.length).keys()]);
-        setVideoTitle(pData.playlist_title || '');
-        setVideoAuthor('');
+      setIsPlaylist(playlistResponse.data.is_playlist);
+      
+      if (playlistResponse.data.is_playlist) {
+        setPlaylistInfo(playlistResponse.data);
+        // By default select all playlist items
+        setSelectedIndices([...Array(playlistResponse.data.items.length).keys()]);
+        setFormats(null);
       } else {
-        // Single track / video
-        const title = pData.data?.title || pData.playlist_title || '';
-        const author = pData.data?.artist || pData.data?.author || '';
-        setVideoTitle(title);
-        setVideoAuthor(author);
+        // Get available formats
+        const formatsResponse = await axios.post(`${API_URL}/formats`, { url });
+        setFormats(formatsResponse.data);
       }
-
-      // Get available formats (static response)
-      const formatsResponse = await axios.post(`${API_URL}/formats`, { url });
-      setFormats(formatsResponse.data);
-
+      
+      // Extract and save video title
+      const videoTitle = playlistResponse.data.is_playlist 
+        ? playlistResponse.data.playlist_title 
+        : (playlistResponse.data.items[0]?.title || 'Unknown video');
+      
+      setVideoTitle(videoTitle);  // Add this state variable
     } catch (err) {
-      setError(`Failed to get info: ${err.response?.data?.detail || err.message}`);
+      setError(`Failed to get formats: ${err.response?.data?.detail || err.message}`);
     } finally {
       setLoading(false);
     }
   };
-
+  
   const toggleSelectAll = () => {
     if (!playlistInfo) return;
+    
     if (selectAll) {
+      // Deselect all
       setSelectedIndices([]);
       setSelectAll(false);
     } else {
+      // Select all
       setSelectedIndices([...Array(playlistInfo.items.length).keys()]);
       setSelectAll(true);
     }
   };
-
+  
   const togglePlaylistItem = (index) => {
-    setSelectedIndices((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
-    );
+    setSelectedIndices(prev => {
+      if (prev.includes(index)) {
+        return prev.filter(i => i !== index);
+      } else {
+        return [...prev, index];
+      }
+    });
   };
-
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
+  
   const startDownload = async (e) => {
     e.preventDefault();
     if (!url) return;
-
+    
     setLoading(true);
     setError(null);
-
-    const quality = mediaType === 'video' ? videoQuality : audioQuality;
-    const fileFormat = mediaType === 'video' ? videoFormat : audioFormat;
-
-    // ------------------------------------------------------------------
-    // Single download
-    // ------------------------------------------------------------------
-    if (!isPlaylist) {
-      try {
-        setDownloadStatus({
-          taskId: 'single',
-          status: 'downloading',
-          progress: 50,
-          error: 'Fetching stream URL…',
-        });
-
-        const response = await axios.post(`${API_URL}/download`, {
-          url,
-          format_type: mediaType,
-          quality,
-          file_format: fileFormat,
-          is_playlist: false,
-          selected_indices: null,
-        });
-
-        if (response.data.url) {
-          setDownloadStatus({
-            taskId: 'single',
-            status: 'completed',
-            progress: 100,
-            error: null,
-          });
-
-          // Use actual_format from backend if available (e.g. m4a instead of mp3)
-          const actualExt = response.data.actual_format || fileFormat;
-          const filename = buildFilename(videoTitle, actualExt);
-          triggerDownload(response.data.url, filename);
-        } else {
-          setError('No download URL returned.');
-        }
-      } catch (err) {
-        setError(
-          `Failed to start download: ${err.response?.data?.detail || err.message}`
-        );
-        setLoading(false);
-      }
-      return;
-    }
-
-    // ------------------------------------------------------------------
-    // Playlist sequential download
-    // ------------------------------------------------------------------
-    if (selectedIndices.length === 0) {
-      setError('Please select at least one track to download.');
-      setLoading(false);
-      return;
-    }
-
-    const itemsToDownload = selectedIndices.map((i) => playlistInfo.items[i]);
-    let successCount = 0;
-    let failedCount = 0;
-
-    for (let i = 0; i < itemsToDownload.length; i++) {
-      const item = itemsToDownload[i];
-
-      setDownloadStatus({
-        taskId: 'queue',
-        status: 'downloading',
-        progress: Math.round((i / itemsToDownload.length) * 100),
-        error: `Downloading ${i + 1}/${itemsToDownload.length}: ${item.title}`,
+    
+    try {
+      const quality = mediaType === 'video' ? videoQuality : audioQuality;
+      const fileFormat = mediaType === 'video' ? videoFormat : audioFormat;
+      
+      const response = await axios.post(`${API_URL}/download`, {
+        url,
+        format_type: mediaType,
+        quality,
+        file_format: fileFormat,
+        is_playlist: isPlaylist,
+        selected_indices: isPlaylist ? selectedIndices : null
       });
-
-      try {
-        const response = await axios.post(`${API_URL}/download`, {
-          url: item.id,
-          format_type: mediaType,
-          quality,
-          file_format: fileFormat,
-          is_playlist: false,
-          selected_indices: null,
-        });
-
-        if (response.data.url) {
-          const actualExt = response.data.actual_format || fileFormat;
-          const trackNum = (i + 1).toString().padStart(3, '0');
-          const filename = buildFilename(`${trackNum}_${item.title}`, actualExt);
-          triggerDownload(response.data.url, filename);
-          successCount++;
-        } else {
-          throw new Error('No URL returned from backend');
+      
+      const taskId = response.data.task_id;
+      
+      // Start polling for progress
+      setDownloadStatus({
+        taskId,
+        status: 'queued',
+        progress: 0
+      });
+      
+      const pollInterval = setInterval(async () => {
+        try {
+          const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
+          const { status, progress, error, file_path } = progressResponse.data;
+          
+          setDownloadStatus({ taskId, status, progress, error, filePath: file_path });
+          
+          if (status === 'completed') {
+            clearInterval(pollInterval);
+            // Create download link
+            window.location.href = `${API_URL}/download/${taskId}`;
+          } else if (status === 'error') {
+            clearInterval(pollInterval);
+            setError(`Download failed: ${error}`);
+          }
+        } catch (err) {
+          clearInterval(pollInterval);
+          setError(`Failed to get progress: ${err.message}`);
         }
-
-        // Anti-rate-limit delay between tracks (not on the last one)
-        if (i < itemsToDownload.length - 1) {
-          setDownloadStatus({
-            taskId: 'queue',
-            status: 'downloading',
-            progress: Math.round(((i + 1) / itemsToDownload.length) * 100),
-            error: `Waiting 4 s before next track…`,
-          });
-          await delay(4000);
-        }
-      } catch (err) {
-        console.error(`Failed to download ${item.title}:`, err);
-        failedCount++;
-      }
+      }, 1000);
+      
+    } catch (err) {
+      setError(`Failed to start download: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      setLoading(false);
     }
-
-    setDownloadStatus({
-      taskId: 'queue_done',
-      status: 'completed',
-      progress: 100,
-      error: `Done! ✅ ${successCount} downloaded, ❌ ${failedCount} failed.`,
-    });
-    setLoading(false);
   };
-
+  
   const formatDuration = (seconds) => {
     if (!seconds) return 'Unknown';
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
-
-  return (
+    return (
     <div className="download-form">
-      {/* Spotify notice */}
       {url.includes('spotify.com') && (
         <div className="alert alert-warning" role="alert">
-          🎵 Spotify URLs are resolved to YouTube audio tracks for download.
+          
         </div>
       )}
-
-      {/* URL input form */}
+      
       <form onSubmit={fetchFormats}>
         <div className="mb-3">
-          <label htmlFor="url" className="form-label">Video / Audio URL</label>
+          <label htmlFor="url" className="form-label">Video/Audio URL</label>
           <div className="input-group">
             <input
               type="text"
-              className="form-control"
-              id="url"
+              className="form-control"              id="url"
               value={url}
               onChange={handleUrlChange}
               placeholder="Paste YouTube, Facebook, Instagram, TikTok, or Spotify URL"
               required
             />
-            <button
-              type="submit"
+            <button 
+              type="submit" 
               className="btn btn-outline-primary"
               disabled={loading || !url}
             >
-              {loading ? 'Loading…' : 'Check Formats'}
+              {loading ? 'Loading...' : 'Check Formats'}
             </button>
-          </div>
-          <div className="form-text">
+          </div>          <div className="form-text">
             Supports single videos, YouTube playlists, and Spotify tracks/playlists
           </div>
         </div>
       </form>
-
-      {/* Single video / track info card */}
-      {videoTitle && !isPlaylist && (
+        {videoTitle && !isPlaylist && (
         <div className="card mb-3">
           <div className="card-header bg-primary text-white">
             <h5 className="mb-0">
-              {url.includes('spotify.com') ? '🎵 Track Information' : '🎬 Video Information'}
+              {url.includes('spotify.com') ? 'Track Information' : 'Video Information'}
             </h5>
           </div>
           <div className="card-body">
-            <div className="mb-1">
+            <div className="mb-2">
               <strong>Title:</strong> {videoTitle}
             </div>
-            {videoAuthor && (
-              <div className="mb-1">
-                <strong>{url.includes('spotify.com') ? 'Artist' : 'Channel'}:</strong> {videoAuthor}
+            {url.includes('spotify.com') && formats && formats.items && formats.items[0]?.artist && (
+              <div className="mb-2">
+                <strong>Artist:</strong> {formats.items[0].artist}
               </div>
             )}
-            <div className="mb-0 text-muted small">
-              File will be saved as:{' '}
-              <code>
-                {buildFilename(
-                  videoTitle,
-                  mediaType === 'video' ? videoFormat : audioFormat
-                )}
-              </code>
+            <div className="mb-0">
+              <strong>Download will be saved as:</strong> {videoTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}
+              {mediaType === 'video' ? `.${videoFormat}` : `.${audioFormat}`}
             </div>
           </div>
         </div>
       )}
-
-      {/* Error */}
-      {error && <div className="alert alert-danger">{error}</div>}
-
-      {/* Playlist items */}
-      {playlistInfo && playlistInfo.type === 'playlist' && (
+      
+      {error && (
+        <div className="alert alert-danger">{error}</div>
+      )}
+      
+      {playlistInfo && playlistInfo.is_playlist && (
         <div className="card mb-3">
           <div className="card-header bg-info text-white d-flex justify-content-between align-items-center">
             <h5 className="mb-0">
-              {playlistInfo.platform === 'spotify' ? '🎵' : '🎬'}{' '}
-              {playlistInfo.playlist_title}
+              {playlistInfo.platform === 'spotify' ? '🎵' : '🎬'} {playlistInfo.playlist_title}
             </h5>
             <span className="badge bg-light text-dark">
-              {playlistInfo.count}{' '}
-              {playlistInfo.platform === 'spotify' ? 'tracks' : 'videos'}
+              {playlistInfo.count} {playlistInfo.platform === 'spotify' ? 'tracks' : 'videos'}
             </span>
           </div>
           <div className="card-body">
-            <div className="alert alert-info alert-sm" role="alert" style={{ fontSize: '0.9rem' }}>
-              <i className="bi bi-info-circle-fill me-2"></i>
-              Your browser will ask to <strong>allow multiple downloads</strong> after the
-              second track starts. Click <em>Allow</em> to let the playlist download
-              automatically.
-            </div>
             <div className="d-flex justify-content-between mb-3">
-              <button
-                type="button"
-                className="btn btn-sm btn-outline-primary"
+              <button 
+                type="button" 
+                className="btn btn-sm btn-outline-primary" 
                 onClick={toggleSelectAll}
               >
                 {selectAll ? 'Deselect All' : 'Select All'}
               </button>
-              <span className="text-muted">
-                {selectedIndices.length} of {playlistInfo.count} selected
-              </span>
+              <span className="text-muted">{selectedIndices.length} of {playlistInfo.count} selected</span>
             </div>
-
-            <div className="playlist-items" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+            
+            <div className="playlist-items" style={{maxHeight: '300px', overflowY: 'auto'}}>
               {playlistInfo.items.map((item, index) => (
-                <div
-                  key={index}
-                  className={`playlist-item d-flex align-items-center p-2 ${
-                    selectedIndices.includes(index) ? 'bg-light border' : ''
-                  }`}
-                  style={{ cursor: 'pointer', borderRadius: '4px', marginBottom: '5px' }}
+                <div 
+                  key={item.id} 
+                  className={`playlist-item d-flex align-items-center p-2 ${selectedIndices.includes(index) ? 'bg-light border' : ''}`}
+                  style={{cursor: 'pointer', borderRadius: '4px', marginBottom: '5px'}}
                   onClick={() => togglePlaylistItem(index)}
                 >
                   <div className="form-check me-2">
@@ -369,15 +252,12 @@ const DownloadForm = ({ setDownloadStatus }) => {
                       onChange={() => {}}
                       onClick={(e) => e.stopPropagation()}
                     />
-                  </div>
-                  <div className="ms-2 flex-grow-1">
+                  </div>                  <div className="ms-2 flex-grow-1">
                     <div className="fw-bold">{index + 1}. {item.title}</div>
                     {item.artist && (
                       <div className="text-muted small">Artist: {item.artist}</div>
                     )}
-                    <div className="text-muted small">
-                      Duration: {formatDuration(item.duration)}
-                    </div>
+                    <div className="text-muted small">Duration: {formatDuration(item.duration)}</div>
                   </div>
                 </div>
               ))}
@@ -385,11 +265,9 @@ const DownloadForm = ({ setDownloadStatus }) => {
           </div>
         </div>
       )}
-
-      {/* Format / quality selection + download button */}
-      {formats && (
-        <form onSubmit={startDownload}>
-          <div className="mb-3">
+      
+      {(formats || playlistInfo) && (
+        <form onSubmit={startDownload}>          <div className="mb-3">
             <label className="form-label">Media Type</label>
             <div className="btn-group d-flex" role="group">
               <input
@@ -402,13 +280,8 @@ const DownloadForm = ({ setDownloadStatus }) => {
                 onChange={() => setMediaType('video')}
                 disabled={url.includes('spotify.com')}
               />
-              <label
-                className={`btn btn-outline-primary ${url.includes('spotify.com') ? 'disabled' : ''}`}
-                htmlFor="videoType"
-              >
-                Video
-              </label>
-
+              <label className={`btn btn-outline-primary ${url.includes('spotify.com') ? 'disabled' : ''}`} htmlFor="videoType">Video</label>
+              
               <input
                 type="radio"
                 className="btn-check"
@@ -418,17 +291,14 @@ const DownloadForm = ({ setDownloadStatus }) => {
                 checked={mediaType === 'audio' || url.includes('spotify.com')}
                 onChange={() => setMediaType('audio')}
               />
-              <label className="btn btn-outline-primary" htmlFor="audioType">
-                Audio Only
-              </label>
-            </div>
-            {url.includes('spotify.com') && (
+              <label className="btn btn-outline-primary" htmlFor="audioType">Audio Only</label>
+            </div>            {url.includes('spotify.com') && (
               <div className="form-text text-warning">
-                ⚠️ Spotify links are audio-only (resolved to YouTube audio).
+                <i className="bi bi-exclamation-triangle"></i> 
               </div>
             )}
           </div>
-
+          
           {mediaType === 'video' ? (
             <div className="row mb-3">
               <div className="col-md-6">
@@ -440,14 +310,10 @@ const DownloadForm = ({ setDownloadStatus }) => {
                   onChange={(e) => setVideoQuality(e.target.value)}
                 >
                   <option value="480p">480p</option>
-                  <option value="720p">720p (max for direct stream)</option>
+                  <option value="720p">720p</option>
                   <option value="1080p">1080p</option>
-                  <option value="1440p">1440p</option>
-                  <option value="2160p">4K (2160p)</option>
+                  <option value="4K">4K (2160p)</option>
                 </select>
-                <div className="form-text text-muted">
-                  Note: YouTube progressive streams max at 720p. Higher qualities use adaptive streams.
-                </div>
               </div>
               <div className="col-md-6">
                 <label htmlFor="videoFormat" className="form-label">Format</label>
@@ -489,26 +355,19 @@ const DownloadForm = ({ setDownloadStatus }) => {
                   <option value="m4a">M4A</option>
                   <option value="opus">Opus</option>
                 </select>
-                <div className="form-text text-muted">
-                  Note: YouTube audio is served as M4A. The file plays in all modern players.
-                </div>
               </div>
             </div>
           )}
-
-          <div className="d-grid gap-2">
-            <button
-              type="submit"
+          
+          <div className="d-grid gap-2">            <button 
+              type="submit" 
               className="btn btn-primary"
               disabled={loading || (isPlaylist && selectedIndices.length === 0)}
             >
-              {loading
-                ? 'Processing…'
-                : isPlaylist
-                ? `Download ${selectedIndices.length} ${
-                    playlistInfo?.platform === 'spotify' ? 'tracks' : 'videos'
-                  }`
-                : 'Download'}
+              {loading ? 'Processing...' : 
+               isPlaylist ? 
+                 `Download ${selectedIndices.length} ${playlistInfo?.platform === 'spotify' ? 'tracks' : 'videos'}` : 
+                 'Download'}
             </button>
           </div>
         </form>

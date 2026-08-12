@@ -1,10 +1,7 @@
 how to start local:
 
-step 00:  Activate the virtual environment:
-          \media download app\backend> venv\Scripts\activate  (On Windows)
-
 step 01:  Install all required dependencies:
-          \media download app\backend> pip install -r requirements.txt --upgrade
+          \media download app\backend> pip install -r requirements.txt  
 
 step 02:  Update yt-dlp to the latest version:
           \media download app\backend> pip install -U yt-dlp

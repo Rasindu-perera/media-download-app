@@ -1,223 +1,364 @@
 """
-Spotify Web Scraping Module
+Spotify Web API Integration Module
 
-This module scrapes metadata directly from Spotify's public embed widgets,
-bypassing the need for Developer API credentials or a Premium account.
-
-All regex operations are performed safely: every re.search() call checks
-for a None match before calling .group(), preventing 'NoneType' AttributeErrors.
+This module provides functions to interact with the Spotify Web API to get actual
+track and playlist information, improving the accuracy of our downloads.
 """
 
-import re
+import os
+import base64
 import json
+import time
+from typing import Dict, List, Optional
 import requests
-from typing import Dict, Optional, Tuple
+
+# Spotify API credentials
+CLIENT_ID = "fdb8b3417e1d4001ada0c42160d50632"
+CLIENT_SECRET = "eeaeb5d0c42445ea8d347f91e3ea0b89"
+
+# Token storage
+_access_token = None
+_token_expiry = 0
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def get_spotify_token() -> str:
+    """
+    Get a valid Spotify access token, refreshing if necessary.
+    """
+    global _access_token, _token_expiry
+    
+    # Check if we need a new token
+    current_time = time.time()
+    if _access_token is None or current_time >= _token_expiry:
+        # Prepare for token request
+        auth_string = f"{CLIENT_ID}:{CLIENT_SECRET}"
+        auth_bytes = auth_string.encode('utf-8')
+        auth_base64 = str(base64.b64encode(auth_bytes), 'utf-8')
+        
+        url = "https://accounts.spotify.com/api/token"
+        headers = {
+            "Authorization": f"Basic {auth_base64}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        data = {"grant_type": "client_credentials"}
+        
+        # Make the request
+        response = requests.post(url, headers=headers, data=data)
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to get Spotify token: {response.text}")
+        
+        # Parse the response
+        response_data = response.json()
+        _access_token = response_data["access_token"]
+        # Set expiry time (subtract 60 seconds for safety margin)
+        expires_in = response_data.get("expires_in", 3600)  # Default to 1 hour
+        _token_expiry = current_time + expires_in - 60
+    
+    return _access_token
+
 
 def get_headers() -> Dict[str, str]:
-    """Return browser-like headers for Spotify requests."""
+    """Get headers for Spotify API requests."""
+    token = get_spotify_token()
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/123.0.0.0 Safari/537.36"
-        )
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
     }
 
 
-def extract_spotify_id_from_url(url: str) -> Tuple[Optional[str], Optional[str]]:
+def extract_spotify_id_from_url(url: str) -> tuple:
     """
-    Extract the content type and ID from a Spotify URL.
-
-    Supports track, playlist, and album URLs.
-    Returns (None, None) if the URL is not a recognised Spotify content URL.
-
-    Safe: uses re.search with an explicit None-check before calling .group().
+    Extract the type of content and ID from a Spotify URL.
+    
+    Args:
+        url: Spotify URL
+        
+    Returns:
+        Tuple of (content_type, content_id)
     """
-    patterns = {
-        "track":    r"spotify\.com/(?:[a-z]{2}/)?track/([A-Za-z0-9]+)",
-        "playlist": r"spotify\.com/(?:[a-z]{2}/)?playlist/([A-Za-z0-9]+)",
-        "album":    r"spotify\.com/(?:[a-z]{2}/)?album/([A-Za-z0-9]+)",
-    }
+    if "track" in url:
+        content_type = "track"
+        track_id = url.split("/track/")[1].split("?")[0]
+        return content_type, track_id
+    elif "playlist" in url:
+        content_type = "playlist"
+        playlist_id = url.split("/playlist/")[1].split("?")[0]
+        return content_type, playlist_id
+    elif "album" in url:
+        content_type = "album"
+        album_id = url.split("/album/")[1].split("?")[0]
+        return content_type, album_id
+    else:
+        return None, None
 
-    for content_type, pattern in patterns.items():
-        match = re.search(pattern, url)
-        if match:
-            return content_type, match.group(1)
 
-    return None, None
-
-
-# ---------------------------------------------------------------------------
-# Core scraper
-# ---------------------------------------------------------------------------
-
-def scrape_spotify_embed(content_type: str, content_id: str) -> Dict:
+def get_track_info(track_id: str) -> Dict:
     """
-    Fetch the Spotify embed page for a given content type/ID and extract
-    the embedded ``__NEXT_DATA__`` JSON blob.
-
-    Returns the ``entity`` sub-object from the JSON.
-    Raises ValueError with a descriptive message when the page structure
-    is unexpected (regex mismatch or missing JSON keys).
+    Get detailed information about a Spotify track.
+    
+    Args:
+        track_id: Spotify track ID
+        
+    Returns:
+        Dictionary with track information
     """
-    embed_url = f"https://open.spotify.com/embed/{content_type}/{content_id}"
-
-    response = requests.get(embed_url, headers=get_headers(), timeout=15)
+    url = f"https://api.spotify.com/v1/tracks/{track_id}"
+    headers = get_headers()
+    
+    response = requests.get(url, headers=headers)
+    
     if response.status_code != 200:
-        raise Exception(
-            f"Failed to fetch Spotify embed page (HTTP {response.status_code}): {embed_url}"
-        )
-
-    html = response.text
-
-    # ------------------------------------------------------------------
-    # Safe regex extraction — always check for None before calling .group()
-    # ------------------------------------------------------------------
-    pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
-    match = re.search(pattern, html, re.DOTALL)
-
-    if match is None:
-        raise ValueError(
-            "Could not find '__NEXT_DATA__' script tag in the Spotify embed page. "
-            "Spotify may have changed its page structure."
-        )
-
-    try:
-        data = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Failed to parse '__NEXT_DATA__' JSON: {exc}") from exc
-
-    # ------------------------------------------------------------------
-    # Navigate the JSON structure safely
-    # ------------------------------------------------------------------
-    try:
-        entity = data["props"]["pageProps"]["state"]["data"]["entity"]
-    except (KeyError, TypeError) as exc:
-        raise ValueError(
-            f"Unexpected JSON structure in Spotify embed page (missing key: {exc}). "
-            "Spotify may have changed its response format."
-        ) from exc
-
-    return entity
+        raise Exception(f"Failed to get track info: {response.text}")
+    
+    track_data = response.json()
+    
+    # Extract relevant information
+    track_info = {
+        "id": track_data["id"],
+        "title": track_data["name"],
+        "artist": track_data["artists"][0]["name"],  # Primary artist
+        "album": track_data["album"]["name"],
+        "duration": int(track_data["duration_ms"] / 1000),  # Convert to seconds
+        "release_date": track_data["album"]["release_date"],
+        "album_art": track_data["album"]["images"][0]["url"] if track_data["album"]["images"] else None
+    }
+    
+    # Get multiple artists if available
+    if len(track_data["artists"]) > 1:
+        all_artists = [artist["name"] for artist in track_data["artists"]]
+        track_info["all_artists"] = all_artists
+        # Format multiple artists for display
+        track_info["artist"] = ", ".join(all_artists)
+    
+    return track_info
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def get_playlist_info(playlist_id: str) -> Dict:
+    """
+    Get detailed information about a Spotify playlist.
+    
+    Args:
+        playlist_id: Spotify playlist ID
+        
+    Returns:
+        Dictionary with playlist information and tracks
+    """
+    # First get playlist details
+    playlist_url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+    headers = get_headers()
+    
+    response = requests.get(playlist_url, headers=headers)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to get playlist info: {response.text}")
+    
+    playlist_data = response.json()
+    
+    # Basic playlist info
+    playlist_info = {
+        "id": playlist_data["id"],
+        "name": playlist_data["name"],
+        "description": playlist_data["description"],
+        "owner": playlist_data["owner"]["display_name"],
+        "total_tracks": playlist_data["tracks"]["total"],
+        "image": playlist_data["images"][0]["url"] if playlist_data["images"] else None
+    }
+    
+    # Get all tracks (handles pagination)
+    tracks = []
+    tracks_url = playlist_data["tracks"]["href"]
+    
+    while tracks_url:
+        tracks_response = requests.get(tracks_url, headers=headers)
+        
+        if tracks_response.status_code != 200:
+            raise Exception(f"Failed to get playlist tracks: {tracks_response.text}")
+        
+        tracks_data = tracks_response.json()
+        
+        # Process tracks in this page
+        for item in tracks_data["items"]:
+            if item["track"]:  # Some items might be None if tracks were removed
+                track = item["track"]
+                track_info = {
+                    "id": track["id"],
+                    "title": track["name"],
+                    "artist": track["artists"][0]["name"],  # Primary artist
+                    "album": track["album"]["name"],
+                    "duration": int(track["duration_ms"] / 1000),  # Convert to seconds
+                    "album_art": track["album"]["images"][0]["url"] if track["album"]["images"] else None
+                }
+                
+                # Get multiple artists if available
+                if len(track["artists"]) > 1:
+                    all_artists = [artist["name"] for artist in track["artists"]]
+                    track_info["all_artists"] = all_artists
+                    # Format multiple artists for display
+                    track_info["artist"] = ", ".join(all_artists)
+                
+                tracks.append(track_info)
+        
+        # Get next page if available
+        tracks_url = tracks_data.get("next")
+    
+    # Complete playlist information with tracks
+    playlist_info["tracks"] = tracks
+    
+    return playlist_info
+
+
+def get_album_info(album_id: str) -> Dict:
+    """
+    Get detailed information about a Spotify album.
+    
+    Args:
+        album_id: Spotify album ID
+        
+    Returns:
+        Dictionary with album information and tracks
+    """
+    # First get album details
+    album_url = f"https://api.spotify.com/v1/albums/{album_id}"
+    headers = get_headers()
+    
+    response = requests.get(album_url, headers=headers)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to get album info: {response.text}")
+    
+    album_data = response.json()
+    
+    # Basic album info
+    album_info = {
+        "id": album_data["id"],
+        "name": album_data["name"],
+        "artist": album_data["artists"][0]["name"],  # Primary artist
+        "release_date": album_data["release_date"],
+        "total_tracks": album_data["total_tracks"],
+        "image": album_data["images"][0]["url"] if album_data["images"] else None
+    }
+    
+    # Get multiple artists if available
+    if len(album_data["artists"]) > 1:
+        all_artists = [artist["name"] for artist in album_data["artists"]]
+        album_info["all_artists"] = all_artists
+        # Format multiple artists for display
+        album_info["artist"] = ", ".join(all_artists)
+    
+    # Get all tracks (handles pagination)
+    tracks = []
+    tracks_url = album_data["tracks"]["href"]
+    
+    while tracks_url:
+        tracks_response = requests.get(tracks_url, headers=headers)
+        
+        if tracks_response.status_code != 200:
+            raise Exception(f"Failed to get album tracks: {tracks_response.text}")
+        
+        tracks_data = tracks_response.json()
+        
+        # Process tracks in this page
+        for track in tracks_data["items"]:
+            track_info = {
+                "id": track["id"],
+                "title": track["name"],
+                "artist": track["artists"][0]["name"],  # Primary artist
+                "album": album_info["name"],  # Use album name from parent
+                "duration": int(track["duration_ms"] / 1000),  # Convert to seconds
+                "album_art": album_info["image"]  # Use album art from parent
+            }
+            
+            # Get multiple artists if available
+            if len(track["artists"]) > 1:
+                all_artists = [artist["name"] for artist in track["artists"]]
+                track_info["all_artists"] = all_artists
+                # Format multiple artists for display
+                track_info["artist"] = ", ".join(all_artists)
+            
+            tracks.append(track_info)
+        
+        # Get next page if available
+        tracks_url = tracks_data.get("next")
+    
+    # Complete album information with tracks
+    album_info["tracks"] = tracks
+    
+    return album_info
+
 
 def get_spotify_content_info(url: str) -> Dict:
     """
-    Return metadata for any Spotify track, playlist, or album URL.
-
-    Return value shape
-    ------------------
-    Single track::
-
-        {
-            "type": "single",
-            "data": {
-                "id": str,
-                "title": str,
-                "artist": str,
-                "album": str,
-                "duration": int,   # seconds
-                "thumbnail": str | None
-            }
-        }
-
-    Playlist / album::
-
-        {
-            "type": "playlist",
-            "playlist_title": str,
-            "items": [ {"id", "title", "artist", "album", "duration", "thumbnail"}, ... ],
-            "count": int
-        }
+    Get information about any Spotify content (track, playlist, or album).
+    
+    Args:
+        url: Spotify URL
+        
+    Returns:
+        Dictionary with information about the content
     """
     content_type, content_id = extract_spotify_id_from_url(url)
+    
     if not content_type or not content_id:
-        raise ValueError(
-            f"Invalid or unrecognised Spotify URL: {url!r}. "
-            "Expected a track, playlist, or album URL."
-        )
-
-    entity = scrape_spotify_embed(content_type, content_id)
-
-    title    = entity.get("title", "Unknown")
-    subtitle = entity.get("subtitle", "Unknown")
-
-    # Cover art — multiple fallback layers
-    cover_art_url: Optional[str] = None
-    try:
-        sources = entity.get("coverArt", {}).get("sources") or []
-        if sources:
-            cover_art_url = sources[0].get("url")
-    except (AttributeError, IndexError):
-        pass
-
-    # ------------------------------------------------------------------
-    # Single track
-    # ------------------------------------------------------------------
+        raise ValueError("Invalid Spotify URL")
+    
     if content_type == "track":
-        raw_duration = entity.get("duration", 0)
-        try:
-            duration_secs = int(raw_duration) // 1000
-        except (TypeError, ValueError):
-            duration_secs = 0
-
+        track_info = get_track_info(content_id)
         return {
-            "type": "single",
-            "data": {
-                "id":        content_id,
-                "title":     title,
-                "artist":    subtitle,
-                "album":     "Unknown Album",
-                "duration":  duration_secs,
-                "thumbnail": cover_art_url,
-            },
+            "is_playlist": False,
+            "platform": "spotify",
+            "items": [track_info],
+            "count": 1
         }
+    elif content_type == "playlist":
+        playlist_info = get_playlist_info(content_id)
+        return {
+            "is_playlist": True,
+            "platform": "spotify",
+            "playlist_title": playlist_info["name"],
+            "description": playlist_info["description"],
+            "owner": playlist_info["owner"],
+            "image": playlist_info["image"],
+            "items": playlist_info["tracks"],
+            "count": playlist_info["total_tracks"]
+        }
+    elif content_type == "album":
+        album_info = get_album_info(content_id)
+        return {
+            "is_playlist": True,  # Treat albums like playlists
+            "platform": "spotify",
+            "playlist_title": f"{album_info['name']} (Album)",
+            "description": f"Album by {album_info['artist']}",
+            "owner": album_info["artist"],
+            "image": album_info["image"],
+            "items": album_info["tracks"],
+            "count": album_info["total_tracks"]
+        }
+    else:
+        raise ValueError(f"Unsupported Spotify content type: {content_type}")
 
-    # ------------------------------------------------------------------
-    # Playlist or album
-    # ------------------------------------------------------------------
-    track_list = entity.get("trackList") or []
-    items = []
 
-    for track in track_list:
-        track_cover: Optional[str] = None
-        try:
-            track_sources = track.get("coverArt", {}).get("sources") or []
-            if track_sources:
-                track_cover = track_sources[0].get("url")
-        except (AttributeError, IndexError):
-            pass
-
-        if track_cover is None:
-            track_cover = cover_art_url  # Fall back to the collection cover art
-
-        raw_dur = track.get("duration", 0)
-        try:
-            track_duration = int(raw_dur) // 1000
-        except (TypeError, ValueError):
-            track_duration = 0
-
-        items.append({
-            "id":       track.get("id", ""),
-            "title":    track.get("title", "Unknown Title"),
-            "artist":   track.get("subtitle", "Unknown Artist"),
-            "album":    "Unknown Album",
-            "duration": track_duration,
-            "thumbnail": track_cover,
-        })
-
-    return {
-        "type":           "playlist",
-        "playlist_title": title,
-        "items":          items,
-        "count":          len(items),
-    }
+def download_album_art(image_url: str, output_path: str) -> str:
+    """
+    Download album art from Spotify.
+    
+    Args:
+        image_url: URL of the album art
+        output_path: Path to save the image
+        
+    Returns:
+        Path to the saved image
+    """
+    if not image_url:
+        return None
+    
+    response = requests.get(image_url)
+    
+    if response.status_code != 200:
+        print(f"Failed to download album art: {response.status_code}")
+        return None
+    
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+    
+    return output_path

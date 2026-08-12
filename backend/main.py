@@ -1,19 +1,23 @@
 """
 Media Downloader API — FastAPI backend
 
-Download strategy:
-  • YouTube / Spotify (resolved to YouTube): pytubefix
-    → extracts signed CDN stream URLs server-side; file transfer is
-      browser ↔ YouTube CDN (no Render bandwidth used).
+Download architecture:
+  • YouTube (single & playlist): Piped API
+    → Alternative YouTube frontend with a REST API; works from any IP.
+    → Provides video info (title, thumbnail) and direct stream URLs.
+    → Multiple public instances used as fallbacks.
+  • Spotify: scrape embed metadata → search YouTube via youtubesearchpython
+    → resolve to YouTube → Piped stream URL.
   • Other platforms (Instagram, TikTok, etc.): Cobalt API fallback chain.
 
-/api/proxy streams any remote URL through our server with proper
-Content-Disposition headers, making downloads same-origin so the browser
-shows the "allow multiple downloads" prompt and saves files to disk.
+  /api/proxy streams any remote URL through the server with proper
+  Content-Disposition headers so the browser saves files to disk and shows
+  the "allow multiple downloads" prompt for playlists.
 """
 
 import asyncio
 import os
+import re
 import time
 import urllib.parse
 from typing import AsyncIterator, Dict, List, Optional, Tuple
@@ -82,7 +86,7 @@ AUDIO_BITRATE_MAP: Dict[str, str] = {
 VALID_AUDIO_FORMATS = {"mp3", "ogg", "wav", "opus", "best"}
 
 # ---------------------------------------------------------------------------
-# URL classification
+# URL helpers
 # ---------------------------------------------------------------------------
 
 def _is_youtube_url(url: str) -> bool:
@@ -90,146 +94,260 @@ def _is_youtube_url(url: str) -> bool:
     return "youtube.com" in url_l or "youtu.be" in url_l
 
 
-def _normalize_yt_playlist_url(url: str) -> str:
-    """
-    Extract the list= parameter from any YouTube URL and return a clean
-    https://www.youtube.com/playlist?list=<ID> URL.
-    youtubesearchpython.Playlist requires this exact format.
-    """
-    from urllib.parse import urlparse, parse_qs
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
-    if "list" in params:
-        return f"https://www.youtube.com/playlist?list={params['list'][0]}"
-    return url
+def _extract_yt_video_id(url: str) -> Optional[str]:
+    """Extract the 11-char YouTube video ID from any YouTube URL variant."""
+    patterns = [
+        r'(?:youtube\.com/watch\?.*?v=)([a-zA-Z0-9_-]{11})',
+        r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/v/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _extract_yt_playlist_id(url: str) -> Optional[str]:
+    """Extract the playlist ID (list= parameter) from a YouTube URL."""
+    m = re.search(r'[?&]list=([a-zA-Z0-9_-]+)', url)
+    return m.group(1) if m else None
+
 
 # ---------------------------------------------------------------------------
-# pytubefix helpers — used for ALL YouTube downloads
+# Piped API — Alternative YouTube frontend REST API
+#
+# Endpoints used:
+#   GET /streams/{videoId}                     → video info + stream URLs
+#   GET /playlists/{playlistId}                → playlist info + first page
+#   GET /nextpage/playlists/{id}?nextpage=...  → playlist pagination
+#   GET /search?q=...&filter=videos            → search
+#
+# Multiple public instances are tried in order as fallbacks.
 # ---------------------------------------------------------------------------
 
-def _pytubefix_get_info(url: str) -> dict:
-    """
-    Return title, author, thumbnail for a YouTube video using pytubefix.
-    Falls back to placeholder values on any error.
-    """
-    try:
-        from pytubefix import YouTube
-        yt = YouTube(url)
-        return {
-            "title":     yt.title or "YouTube Video",
-            "author":    yt.author or "",
-            "thumbnail": yt.thumbnail_url,
-        }
-    except Exception:
-        return {"title": "YouTube Video", "author": "", "thumbnail": None}
+PIPED_INSTANCES: List[str] = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.projectsegfau.lt",
+    "https://pipedapi.r4fo.com",
+    "https://pipedapi.in.projectsegfau.lt",
+]
 
 
-def _pytubefix_get_stream_url(
-    url: str, format_type: str, quality: str, file_format: str
+def _piped_request(path: str) -> dict:
+    """
+    Make a GET request to the Piped API, trying each instance until one
+    succeeds. Returns the parsed JSON on success. Raises Exception if all fail.
+    """
+    last_error = "No Piped instances configured."
+
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        for instance in PIPED_INSTANCES:
+            try:
+                url = f"{instance}{path}"
+                resp = client.get(url)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Some instances return {"error": "..."} with 200 status
+                    if isinstance(data, dict) and data.get("error"):
+                        last_error = f"{instance}: {data['error']}"
+                        continue
+                    return data
+
+                last_error = f"{instance}: HTTP {resp.status_code}"
+
+            except httpx.TimeoutException:
+                last_error = f"{instance}: timed out"
+            except httpx.ConnectError:
+                last_error = f"{instance}: unreachable"
+            except Exception as exc:
+                last_error = f"{instance}: {exc}"
+
+    raise Exception(f"All Piped instances failed. Last error: {last_error}")
+
+
+def _piped_get_video_info(video_id: str) -> dict:
+    """
+    Fetch title, uploader, thumbnail, and duration for a YouTube video
+    using the Piped /streams endpoint.
+    """
+    data = _piped_request(f"/streams/{video_id}")
+    return {
+        "title":     data.get("title") or "Unknown",
+        "author":    data.get("uploader") or "",
+        "thumbnail": data.get("thumbnailUrl"),
+        "duration":  data.get("duration", 0),
+    }
+
+
+def _piped_get_stream_url(
+    video_id: str, format_type: str, quality: str
 ) -> Tuple[str, str]:
     """
-    Return (stream_url, actual_file_extension) for a YouTube video.
+    Get a direct stream URL from Piped for a YouTube video.
 
-    Audio: returns the best audio-only stream (typically m4a).
-    Video: returns the best progressive (video+audio merged) mp4 stream
-           at the requested quality, or the highest available progressive
-           stream if the exact quality is not present.
-           Note: progressive streams cap at 720p; 1080p+ requires adaptive
-           streams which need server-side merging (not supported here).
+    Returns (stream_url, file_extension).
+
+    Audio: picks the highest-bitrate audio stream (typically M4A).
+    Video: picks a muxed (video+audio) stream at the requested quality,
+           falling back to the highest available muxed stream.
+           Muxed streams cap at 720p on YouTube; higher needs server-side
+           merging which is not supported in this architecture.
     """
-    from pytubefix import YouTube
+    data = _piped_request(f"/streams/{video_id}")
 
-    yt = YouTube(url)
-
+    # --- Audio ---
     if format_type == "audio":
-        stream = yt.streams.get_audio_only()
-        if stream is None:
-            stream = yt.streams.filter(only_audio=True).first()
-        if stream is None:
-            raise Exception("No audio stream available for this video.")
-        ext = stream.subtype or "m4a"
-        return stream.url, ext
+        audio_streams = data.get("audioStreams") or []
+        if not audio_streams:
+            raise Exception("No audio streams available for this video.")
 
-    # Video
-    quality_str = quality.replace("p", "")
-    stream = yt.streams.filter(
-        progressive=True, file_extension="mp4", res=f"{quality_str}p"
-    ).first()
+        # Sort by bitrate descending, pick the best one
+        audio_streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
+        stream = audio_streams[0]
 
-    if stream is None:
-        # Best available progressive stream (max 720p on YouTube)
-        stream = (
-            yt.streams.filter(progressive=True, file_extension="mp4")
-            .order_by("resolution")
-            .last()
-        )
+        mime = stream.get("mimeType", "audio/mp4")
+        if "mp4" in mime:
+            ext = "m4a"
+        elif "webm" in mime or "opus" in mime:
+            ext = "webm"
+        else:
+            ext = "m4a"
 
-    if stream is None:
-        stream = yt.streams.filter(file_extension="mp4").first()
+        return stream["url"], ext
 
-    if stream is None:
-        raise Exception("No video stream available for this video.")
+    # --- Video ---
+    video_streams = data.get("videoStreams") or []
 
-    ext = stream.subtype or "mp4"
-    return stream.url, ext
+    # Prefer muxed streams (videoOnly == false) — these include audio
+    muxed = [s for s in video_streams if not s.get("videoOnly", True)]
+
+    # Normalise quality target: "720p" / "720" → "720p"
+    quality_num = quality.replace("p", "")
+    target = f"{quality_num}p"
+
+    # Try exact quality match in muxed streams
+    for s in muxed:
+        if s.get("quality") == target:
+            ext = "mp4" if "mp4" in s.get("mimeType", "") else "webm"
+            return s["url"], ext
+
+    # Fallback: highest-resolution muxed stream
+    if muxed:
+        def _res(s):
+            q = s.get("quality", "0p").replace("p", "")
+            try:
+                return int(q)
+            except ValueError:
+                return 0
+        muxed.sort(key=_res, reverse=True)
+        stream = muxed[0]
+        ext = "mp4" if "mp4" in stream.get("mimeType", "") else "webm"
+        return stream["url"], ext
+
+    # No muxed streams at all — return best adaptive video-only stream
+    # (will have no audio, but better than nothing)
+    if video_streams:
+        video_streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
+        stream = video_streams[0]
+        ext = "mp4" if "mp4" in stream.get("mimeType", "") else "webm"
+        return stream["url"], ext
+
+    raise Exception("No video streams available for this video.")
 
 
-def _get_yt_playlist_info(url: str) -> dict:
+def _piped_get_playlist(playlist_id: str) -> dict:
     """
-    Fetch YouTube playlist metadata using youtubesearchpython.Playlist.
-    Normalizes the URL to the required ?list=... format first, and
-    safely handles the case where playlist.videos is None.
-    Requires httpx==0.27.0 (pinned) to avoid the 'proxies' error.
+    Fetch YouTube playlist metadata from Piped, including pagination
+    for large playlists (up to ~500 items / 10 pages).
     """
-    from youtubesearchpython import Playlist
+    data = _piped_request(f"/playlists/{playlist_id}")
 
-    clean_url = _normalize_yt_playlist_url(url)
-    playlist = Playlist(clean_url)
+    all_streams: list = list(data.get("relatedStreams") or [])
+    nextpage = data.get("nextpage")
+    pages = 0
 
-    if playlist.videos is None:
-        raise Exception(
-            f"Could not load YouTube playlist. "
-            f"Make sure the URL contains a valid playlist ID (list=...)."
+    while nextpage and pages < 10:
+        encoded = urllib.parse.quote(str(nextpage), safe="")
+        page_data = _piped_request(
+            f"/nextpage/playlists/{playlist_id}?nextpage={encoded}"
         )
-
-    # Paginate — max 10 pages (~200 videos) to avoid infinite loops
-    page = 0
-    while playlist.hasMoreVideos and page < 10:
-        playlist.getNextVideos()
-        page += 1
+        all_streams.extend(page_data.get("relatedStreams") or [])
+        nextpage = page_data.get("nextpage")
+        pages += 1
 
     items: List[dict] = []
-    for video in playlist.videos or []:
-        thumbnails = video.get("thumbnails") or []
-        thumbnail_url = thumbnails[0]["url"] if thumbnails else None
-        vid_id = video.get("id", "")
+    for stream in all_streams:
+        # stream["url"] is relative: "/watch?v=xxxxx"
+        video_url = stream.get("url", "")
+        vid_match = re.search(r'v=([a-zA-Z0-9_-]{11})', video_url)
+        vid_id = vid_match.group(1) if vid_match else ""
         watch_url = (
-            f"https://www.youtube.com/watch?v={vid_id}"
-            if vid_id
-            else video.get("link", "")
-        )
-        items.append(
-            {
-                "id":        watch_url,
-                "title":     video.get("title", "Unknown"),
-                "thumbnail": thumbnail_url,
-                "duration":  None,
-            }
+            f"https://www.youtube.com/watch?v={vid_id}" if vid_id else ""
         )
 
-    playlist_title = "YouTube Playlist"
-    try:
-        playlist_title = playlist.info["info"]["title"]
-    except (KeyError, TypeError, AttributeError):
-        pass
+        items.append({
+            "id":        watch_url,
+            "title":     stream.get("title") or "Unknown",
+            "thumbnail": stream.get("thumbnail"),
+            "duration":  stream.get("duration"),
+            "artist":    stream.get("uploaderName") or "",
+        })
 
     return {
         "type":           "playlist",
-        "playlist_title": playlist_title,
+        "playlist_title": data.get("name") or "YouTube Playlist",
         "items":          items,
         "count":          len(items),
         "platform":       "youtube",
     }
+
+
+def _piped_search_youtube(query: str) -> Optional[str]:
+    """
+    Search YouTube via Piped. Returns a full YouTube watch URL for the
+    first result, or None if nothing is found.
+    Used as a fallback when youtubesearchpython fails.
+    """
+    try:
+        encoded = urllib.parse.quote(query, safe="")
+        data = _piped_request(f"/search?q={encoded}&filter=videos")
+        items = data.get("items") or data.get("relatedStreams") or []
+        if items:
+            rel_url = items[0].get("url", "")
+            if rel_url.startswith("/watch"):
+                return f"https://www.youtube.com{rel_url}"
+    except Exception:
+        pass
+    return None
+
+
+def _search_youtube(query: str) -> str:
+    """
+    Search YouTube for a query string. Returns a full watch URL.
+    Tries youtubesearchpython first (faster), then Piped search as fallback.
+    Raises Exception if both fail.
+    """
+    # --- Method 1: youtubesearchpython (requires httpx==0.27.0) ---
+    try:
+        from youtubesearchpython import VideosSearch
+        results = VideosSearch(query, limit=1).result()
+        if results and results.get("result"):
+            return results["result"][0]["link"]
+    except Exception as e:
+        print(f"[search] youtubesearchpython failed: {e}")
+
+    # --- Method 2: Piped search ---
+    piped_url = _piped_search_youtube(query)
+    if piped_url:
+        return piped_url
+
+    raise Exception(f"Could not find a YouTube video for: {query}")
+
 
 # ---------------------------------------------------------------------------
 # Cobalt API — fallback for non-YouTube platforms (Instagram, TikTok, etc.)
@@ -249,14 +367,11 @@ COBALT_HEADERS: Dict[str, str] = {
     "Content-Type": "application/json",
 }
 
-_token_cache: Dict[str, Tuple[str, float]] = {}  # {url: (token, expires_at)}
+_token_cache: Dict[str, Tuple[str, float]] = {}
 
 
 def _fetch_session_token(instance_url: str) -> Optional[str]:
-    """
-    Try to obtain a JWT via POST /session (only works on instances that do NOT
-    have Turnstile configured). Tokens are cached per-instance for 50 minutes.
-    """
+    """Try to get a JWT from POST /session (works on non-Turnstile instances)."""
     cached = _token_cache.get(instance_url)
     if cached:
         token, expires_at = cached
@@ -279,11 +394,7 @@ def _fetch_session_token(instance_url: str) -> Optional[str]:
 
 
 def _call_cobalt(payload: dict) -> dict:
-    """
-    Try every Cobalt instance; get a session token first where possible.
-    Skips instances that require auth we cannot satisfy.
-    No 'proxies' argument used anywhere.
-    """
+    """Try each Cobalt instance with session token negotiation."""
     last_error = "No Cobalt instances available."
 
     with httpx.Client(timeout=45.0) as client:
@@ -334,7 +445,9 @@ def _build_cobalt_payload(
         payload["downloadMode"] = "audio"
         fmt = file_format.lower() if file_format.lower() in VALID_AUDIO_FORMATS else "mp3"
         payload["audioFormat"] = fmt
-        bitrate = AUDIO_BITRATE_MAP.get(quality, AUDIO_BITRATE_MAP.get(quality.rstrip("k"), "128"))
+        bitrate = AUDIO_BITRATE_MAP.get(
+            quality, AUDIO_BITRATE_MAP.get(quality.rstrip("k"), "128")
+        )
         payload["audioBitrate"] = bitrate
     else:
         payload["downloadMode"] = "auto"
@@ -349,6 +462,7 @@ def _extract_cobalt_url(data: dict) -> str:
         return data["picker"][0].get("url", "")
     raise Exception(f"Unexpected Cobalt response: {data}")
 
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -360,7 +474,7 @@ async def health_check():
 
 @app.post("/api/formats")
 async def get_formats(request: Request):
-    """Static format list — Cobalt does not require pre-fetching formats."""
+    """Static format list."""
     return {
         "status": "success",
         "video":  ["max", "1080", "720", "480"],
@@ -374,18 +488,17 @@ async def proxy_download(
     filename: str = Query(default="download"),
 ):
     """
-    Stream a remote URL through our server with a Content-Disposition: attachment
-    header. This makes every download same-origin so that:
-      1. link.download attribute works (browser saves file to disk).
-      2. The browser shows the 'allow multiple files' prompt for playlists.
-    Uses chunked streaming — the full file is never loaded into RAM.
+    Stream a remote URL through our server with Content-Disposition: attachment.
+    Makes every download same-origin so the browser saves files properly and
+    shows the "allow multiple downloads" prompt for playlists.
     """
     safe_name = urllib.parse.quote(filename, safe="")
 
     async def _stream() -> AsyncIterator[bytes]:
-        # Connect timeout 10s, read timeout 5 minutes (large files)
         timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True
+        ) as client:
             async with client.stream("GET", url) as resp:
                 async for chunk in resp.aiter_bytes(chunk_size=65_536):
                     yield chunk
@@ -405,25 +518,24 @@ async def proxy_download(
 async def start_download(request: DownloadRequest):
     """
     Resolve the source URL and return a direct stream URL.
-    • Spotify → search YouTube → pytubefix stream URL
-    • YouTube → pytubefix stream URL
+    • Spotify → search YouTube → Piped stream URL
+    • YouTube → Piped stream URL
     • Other (Instagram / TikTok / etc.) → Cobalt API
     """
     try:
         target_url = request.url
 
         # ------------------------------------------------------------------
-        # Spotify single track → find on YouTube
+        # Spotify single track → find on YouTube → get Piped stream
         # ------------------------------------------------------------------
         if is_spotify_url(request.url):
             if request.is_playlist:
                 raise HTTPException(
                     status_code=400,
-                    detail="Spotify playlists are downloaded track-by-track by the frontend.",
+                    detail="Spotify playlists are downloaded track-by-track.",
                 )
 
             from spotify_api import get_spotify_content_info
-            from youtubesearchpython import VideosSearch
 
             info = get_spotify_content_info(request.url)
             if info.get("type") != "single":
@@ -433,27 +545,29 @@ async def start_download(request: DownloadRequest):
             search_query = (
                 f"{track.get('artist', '')} {track.get('title', '')}".strip()
             )
-            results = VideosSearch(search_query, limit=1).result()
-            if results and results.get("result"):
-                target_url = results["result"][0]["link"]
-            else:
-                raise Exception(f"Could not find a YouTube match for: {search_query}")
+
+            # Search YouTube (youtubesearchpython → Piped fallback)
+            target_url = await asyncio.to_thread(_search_youtube, search_query)
 
         # ------------------------------------------------------------------
-        # YouTube (including Spotify-resolved) → pytubefix
+        # YouTube (including Spotify-resolved) → Piped stream URL
         # ------------------------------------------------------------------
         if _is_youtube_url(target_url):
-            # Run synchronous pytubefix in a thread to avoid blocking the event loop
+            video_id = _extract_yt_video_id(target_url)
+            if not video_id:
+                raise Exception(
+                    f"Could not extract YouTube video ID from: {target_url}"
+                )
+
             stream_url, actual_ext = await asyncio.to_thread(
-                _pytubefix_get_stream_url,
-                target_url,
+                _piped_get_stream_url,
+                video_id,
                 request.format_type,
                 request.quality,
-                request.file_format,
             )
             return {
-                "task_id":      "stream",
-                "url":          stream_url,
+                "task_id":       "stream",
+                "url":           stream_url,
                 "actual_format": actual_ext,
             }
 
@@ -465,7 +579,11 @@ async def start_download(request: DownloadRequest):
         )
         data = _call_cobalt(payload)
         download_url = _extract_cobalt_url(data)
-        return {"task_id": "cobalt", "url": download_url, "actual_format": request.file_format}
+        return {
+            "task_id":       "cobalt",
+            "url":           download_url,
+            "actual_format": request.file_format,
+        }
 
     except HTTPException:
         raise
@@ -478,12 +596,11 @@ async def get_playlist_info(request: PlaylistRequest):
     """
     Return playlist / track metadata for YouTube or Spotify URLs.
 
-    Key design decisions:
+    Design:
     ─ Spotify playlists: item.id = full Spotify track URL.
-      /api/download receives each one and resolves → YouTube → pytubefix.
-      No YouTube searches happen at info-fetch time (avoids timeout).
-    ─ YouTube playlists: youtubesearchpython.Playlist with URL normalization.
-    ─ Single YouTube videos: pytubefix title (real title, not placeholder).
+      /api/download resolves each one → YouTube → Piped at download time.
+    ─ YouTube playlists: Piped /playlists/{id} with pagination.
+    ─ Single YouTube videos: Piped /streams/{id} for real title + thumbnail.
     """
     try:
         url = request.url
@@ -515,31 +632,42 @@ async def get_playlist_info(request: PlaylistRequest):
         # ------------------------------------------------------------------
         # YouTube playlist
         # ------------------------------------------------------------------
-        is_yt_playlist = "list=" in url and (
-            "youtube.com/playlist" in url
-            or "youtube.com/watch" in url
-            or "youtu.be" in url
-        )
-
-        if is_yt_playlist:
+        playlist_id = _extract_yt_playlist_id(url)
+        if playlist_id:
             try:
-                return await asyncio.to_thread(_get_yt_playlist_info, url)
+                return await asyncio.to_thread(
+                    _piped_get_playlist, playlist_id
+                )
             except Exception as err:
-                print(f"[playlist-info] Playlist extraction error: {err}")
+                print(f"[playlist-info] Piped playlist error: {err}")
                 # Fall through to single-video path
 
         # ------------------------------------------------------------------
-        # Single YouTube video — use pytubefix for real title
+        # Single YouTube video — real title via Piped
         # ------------------------------------------------------------------
-        info = await asyncio.to_thread(_pytubefix_get_info, url)
+        video_id = _extract_yt_video_id(url)
+        if video_id:
+            try:
+                info = await asyncio.to_thread(
+                    _piped_get_video_info, video_id
+                )
+                return {
+                    "type":     "single",
+                    "data":     {
+                        "title":     info["title"],
+                        "artist":    info["author"],
+                        "thumbnail": info["thumbnail"],
+                    },
+                    "platform": "youtube",
+                }
+            except Exception as err:
+                print(f"[playlist-info] Piped video info error: {err}")
+
+        # Fallback — couldn't extract info
         return {
             "type":     "single",
-            "data":     {
-                "title":     info["title"],
-                "artist":    info["author"],
-                "thumbnail": info["thumbnail"],
-            },
-            "platform": "youtube",
+            "data":     {"title": "Media", "artist": "", "thumbnail": None},
+            "platform": "other",
         }
 
     except HTTPException:

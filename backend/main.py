@@ -16,7 +16,6 @@ from downloader import (
 from spotify_handler import (
     is_spotify_url, get_spotify_details, download_spotify_track, download_spotify_playlist
 )
-from spotify_direct import get_spotify_stream_url
 
 app = FastAPI(title="Media Downloader API")
 
@@ -50,9 +49,6 @@ class FormatRequest(BaseModel):
 class FormatResponse(BaseModel):
     video_formats: List[dict]
 
-class SpotifyStreamRequest(BaseModel):
-    url: str
-    audio_formats: List[dict]
 
 class PlaylistRequest(BaseModel):
     url: str
@@ -177,16 +173,6 @@ async def get_progress(task_id: str):
     
     return download_progress[task_id]
 
-@app.post("/api/spotify/direct-stream")
-async def spotify_direct_stream(request: SpotifyStreamRequest):
-    """
-    Directly bypass downloading and get the YouTube audio stream URL for a Spotify link.
-    """
-    try:
-        stream_url = get_spotify_stream_url(request.url)
-        return {"stream_url": stream_url}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/download/{task_id}")
 async def get_download(task_id: str):

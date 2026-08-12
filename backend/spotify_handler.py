@@ -22,7 +22,6 @@ if sys.platform == 'win32':
         pass
 
 from downloader import DownloadProgress
-from spotify_api import get_spotify_content_info
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC
 from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image
@@ -51,163 +50,152 @@ def extract_spotify_info(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 def get_spotify_details(url: str) -> dict:
     """
-    Get details about Spotify tracks or playlists using the Spotify Web API.
+    Get details about Spotify tracks or playlists using scraping and embed APIs.
     
     Note that while we can access the metadata, we still use YouTube search for
     the actual audio download due to Spotify's DRM protection.
     """
+    content_type, content_id = extract_spotify_info(url)
+    
+    if not content_type or not content_id:
+        raise ValueError("Unable to extract Spotify information from URL")
+        
+    # Try oEmbed fallback to get real title and thumbnail
     try:
-        # Use the Spotify API to get accurate track/playlist information
-        spotify_info = get_spotify_content_info(url)
-        print(f"Successfully retrieved Spotify content info for: {url}")
-        return spotify_info
-        
-    except Exception as e:
-        print(f"Error accessing Spotify API: {e}")
-        print("Falling back to legacy method...")
-        
-        # FALLBACK METHOD - only used if API fails
-        content_type, content_id = extract_spotify_info(url)
-        
-        if not content_type or not content_id:
-            raise ValueError("Unable to extract Spotify information from URL")
+        import urllib.request
+        import json
+        oembed_url = f"https://open.spotify.com/oembed?url={url}"
+        req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            title = data.get("title", f"Spotify {content_type.title()}")
+            thumbnail = data.get("thumbnail_url")
             
-        # Try oEmbed fallback to get real title and thumbnail
-        try:
-            import urllib.request
-            import json
-            oembed_url = f"https://open.spotify.com/oembed?url={url}"
-            req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                title = data.get("title", f"Spotify {content_type.title()}")
-                thumbnail = data.get("thumbnail_url")
-                
-            if content_type == 'track':
-                return {
-                    'is_playlist': False,
-                    'platform': 'spotify',
-                    'items': [{
-                        'id': content_id,
-                        'title': title,
-                        'duration': 0,
-                        'artist': "Spotify Track",
-                        'album': "Spotify",
-                        'thumbnail': thumbnail
-                    }]
-                }
-            # For playlists/albums, we keep the title but fall through to embed scraping to get the tracks
-        except Exception as oembed_err:
-            print(f"oEmbed fallback also failed: {oembed_err}")
-            
-        if content_type in ['playlist', 'album']:
-            try:
-                import re
-                import urllib.request
-                import json
-                
-                embed_url = f"https://open.spotify.com/embed/{content_type}/{content_id}"
-                req = urllib.request.Request(embed_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req) as response:
-                    html = response.read().decode('utf-8')
-                    
-                match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-                if match:
-                    data = json.loads(match.group(1))
-                    entity = data['props']['pageProps']['state']['data']['entity']
-                    playlist_title = entity.get('name', f"Spotify {content_type.title()}")
-                    track_list = entity.get('trackList', [])
-                    
-                    real_tracks = []
-                    for i, t in enumerate(track_list):
-                        # Extract artist, title, duration
-                        t_title = t.get('title', f"Track {i+1}")
-                        t_subtitle = t.get('subtitle', "Unknown Artist")
-                        t_duration = t.get('duration', 0) // 1000
-                        t_id = t.get('uri', '').split(':')[-1] or f"track_{i}"
-                        
-                        real_tracks.append({
-                            'id': t_id,
-                            'title': t_title,
-                            'duration': t_duration,
-                            'artist': t_subtitle,
-                            'album': playlist_title
-                        })
-                        
-                    return {
-                        'is_playlist': True,
-                        'platform': 'spotify',
-                        'playlist_title': playlist_title,
-                        'items': real_tracks,
-                        'count': len(real_tracks)
-                    }
-            except Exception as e:
-                print(f"Embed scraping failed: {e}")
-                
-            # Fallback if embed scraping fails
-            playlist_title = f"Spotify {content_type.title()} ({content_id[:8]})"
-            
-            # Generate placeholder tracks with descriptive names
-            mock_tracks = []
-            popular_tracks = [
-                {"title": "Imagine", "artist": "John Lennon", "album": "Imagine", "duration": 183},
-                {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354}
-            ]
-            
-            # Use at most 2 tracks for absolute fallback
-            num_tracks = min(2, len(popular_tracks))
-            for i in range(num_tracks):
-                track = popular_tracks[i]
-                mock_tracks.append({
-                    'id': f"track_{i}",
-                    'title': track["title"],
-                    'duration': track["duration"],
-                    'artist': track["artist"],
-                    'album': track["album"]
-                })
-                
-            return {
-                'is_playlist': True,
-                'platform': 'spotify',
-                'playlist_title': playlist_title,
-                'items': mock_tracks,
-                'count': len(mock_tracks)
-            }
-              
-        elif content_type == 'track':
-            # Fallback to a placeholder track if API fails
-            track_index = sum(ord(c) for c in content_id) % 10
-            
-            sample_tracks = [
-                {"title": "Imagine", "artist": "John Lennon", "album": "Imagine", "duration": 183},
-                {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354},
-                {"title": "Shape of You", "artist": "Ed Sheeran", "album": "÷", "duration": 233},
-                {"title": "Billie Jean", "artist": "Michael Jackson", "album": "Thriller", "duration": 294},
-                {"title": "Hotel California", "artist": "Eagles", "album": "Hotel California", "duration": 391},
-                {"title": "Rolling in the Deep", "artist": "Adele", "album": "21", "duration": 228},
-                {"title": "Sweet Child o' Mine", "artist": "Guns N' Roses", "album": "Appetite for Destruction", "duration": 356},
-                {"title": "Uptown Funk", "artist": "Mark Ronson ft. Bruno Mars", "album": "Uptown Special", "duration": 270},
-                {"title": "Smells Like Teen Spirit", "artist": "Nirvana", "album": "Nevermind", "duration": 302},
-                {"title": "Despacito", "artist": "Luis Fonsi ft. Daddy Yankee", "album": "VIDA", "duration": 229}
-            ]
-            
-            selected_track = sample_tracks[track_index]
-            
+        if content_type == 'track':
             return {
                 'is_playlist': False,
                 'platform': 'spotify',
                 'items': [{
                     'id': content_id,
-                    'title': selected_track["title"],
-                    'duration': selected_track["duration"],
-                    'artist': selected_track["artist"],
-                    'album': selected_track["album"]
-                }],
-                'count': 1
+                    'title': title,
+                    'duration': 0,
+                    'artist': "Spotify Track",
+                    'album': "Spotify",
+                    'thumbnail': thumbnail
+                }]
             }
+        # For playlists/albums, we keep the title but fall through to embed scraping to get the tracks
+    except Exception as oembed_err:
+        print(f"oEmbed fallback also failed: {oembed_err}")
         
-        else:
-            raise ValueError(f"Unsupported Spotify content type: {content_type}")
+    if content_type in ['playlist', 'album']:
+        try:
+            import re
+            import urllib.request
+            import json
+            
+            embed_url = f"https://open.spotify.com/embed/{content_type}/{content_id}"
+            req = urllib.request.Request(embed_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                html = response.read().decode('utf-8')
+                
+            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+            if match:
+                data = json.loads(match.group(1))
+                entity = data['props']['pageProps']['state']['data']['entity']
+                playlist_title = entity.get('name', f"Spotify {content_type.title()}")
+                track_list = entity.get('trackList', [])
+                
+                real_tracks = []
+                for i, t in enumerate(track_list):
+                    # Extract artist, title, duration
+                    t_title = t.get('title', f"Track {i+1}")
+                    t_subtitle = t.get('subtitle', "Unknown Artist")
+                    t_duration = t.get('duration', 0) // 1000
+                    t_id = t.get('uri', '').split(':')[-1] or f"track_{i}"
+                    
+                    real_tracks.append({
+                        'id': t_id,
+                        'title': t_title,
+                        'duration': t_duration,
+                        'artist': t_subtitle,
+                        'album': playlist_title
+                    })
+                    
+                return {
+                    'is_playlist': True,
+                    'platform': 'spotify',
+                    'playlist_title': playlist_title,
+                    'items': real_tracks,
+                    'count': len(real_tracks)
+                }
+        except Exception as e:
+            print(f"Embed scraping failed: {e}")
+            
+        # Fallback if embed scraping fails
+        playlist_title = f"Spotify {content_type.title()} ({content_id[:8]})"
+        
+        # Generate placeholder tracks with descriptive names
+        mock_tracks = []
+        popular_tracks = [
+            {"title": "Imagine", "artist": "John Lennon", "album": "Imagine", "duration": 183},
+            {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354}
+        ]
+        
+        # Use at most 2 tracks for absolute fallback
+        num_tracks = min(2, len(popular_tracks))
+        for i in range(num_tracks):
+            track = popular_tracks[i]
+            mock_tracks.append({
+                'id': f"track_{i}",
+                'title': track["title"],
+                'duration': track["duration"],
+                'artist': track["artist"],
+                'album': track["album"]
+            })
+            
+        return {
+            'is_playlist': True,
+            'platform': 'spotify',
+            'playlist_title': playlist_title,
+            'items': mock_tracks,
+            'count': len(mock_tracks)
+        }
+          
+    elif content_type == 'track':
+        # Fallback to a placeholder track if API fails
+        track_index = sum(ord(c) for c in content_id) % 10
+        
+        sample_tracks = [
+            {"title": "Imagine", "artist": "John Lennon", "album": "Imagine", "duration": 183},
+            {"title": "Bohemian Rhapsody", "artist": "Queen", "album": "A Night at the Opera", "duration": 354},
+            {"title": "Shape of You", "artist": "Ed Sheeran", "album": "÷", "duration": 233},
+            {"title": "Billie Jean", "artist": "Michael Jackson", "album": "Thriller", "duration": 294},
+            {"title": "Hotel California", "artist": "Eagles", "album": "Hotel California", "duration": 391},
+            {"title": "Rolling in the Deep", "artist": "Adele", "album": "21", "duration": 228},
+            {"title": "Sweet Child o' Mine", "artist": "Guns N' Roses", "album": "Appetite for Destruction", "duration": 356},
+            {"title": "Uptown Funk", "artist": "Mark Ronson ft. Bruno Mars", "album": "Uptown Special", "duration": 270},
+            {"title": "Smells Like Teen Spirit", "artist": "Nirvana", "album": "Nevermind", "duration": 302},
+            {"title": "Despacito", "artist": "Luis Fonsi ft. Daddy Yankee", "album": "VIDA", "duration": 229}
+        ]
+        
+        selected_track = sample_tracks[track_index]
+        
+        return {
+            'is_playlist': False,
+            'platform': 'spotify',
+            'items': [{
+                'id': content_id,
+                'title': selected_track["title"],
+                'duration': selected_track["duration"],
+                'artist': selected_track["artist"],
+                'album': selected_track["album"]
+            }],
+            'count': 1
+        }
+    
+    else:
+        raise ValueError(f"Unsupported Spotify content type: {content_type}")
 
 
 def format_spotify_filename(artist: str, title: str, index: Optional[int] = None) -> str:

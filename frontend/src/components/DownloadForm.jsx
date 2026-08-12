@@ -135,9 +135,9 @@ const DownloadForm = ({ setDownloadStatus }) => {
       const pollInterval = setInterval(async () => {
         try {
           const progressResponse = await axios.get(`${API_URL}/progress/${taskId}`);
-          const { status, progress, error, file_path } = progressResponse.data;
+          const { status, progress, error, file_path, status_text } = progressResponse.data;
           
-          setDownloadStatus({ taskId, status, progress, error, filePath: file_path });
+          setDownloadStatus({ taskId, status, progress, error, filePath: file_path, statusText: status_text });
           
           if (status === 'completed') {
             clearInterval(pollInterval);

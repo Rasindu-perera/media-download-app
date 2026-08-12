@@ -12,11 +12,14 @@ class DownloadProgress:
     progress: float
     file_path: Optional[str] = None
     error: Optional[str] = None
+    status_text: Optional[str] = None
 
 class ProgressHook:
-    def __init__(self, task_id: str, progress_dict: Dict[str, DownloadProgress]):
+    def __init__(self, task_id: str, progress_dict: Dict[str, DownloadProgress], custom_status_prefix: Optional[str] = None):
         self.task_id = task_id
         self.progress_dict = progress_dict
+        self.download_count = 0
+        self.custom_status_prefix = custom_status_prefix
     
     def __call__(self, d):
         if d['status'] == 'downloading':
@@ -27,15 +30,34 @@ class ProgressHook:
             else:
                 progress = 0
                 
+            if self.custom_status_prefix:
+                status_text = self.custom_status_prefix
+            elif self.download_count == 0:
+                status_text = "Downloading Media (Part 1)..."
+            elif self.download_count == 1:
+                status_text = "Downloading Audio Stream (Part 2)..."
+            else:
+                status_text = "Downloading additional streams..."
+                
             self.progress_dict[self.task_id] = DownloadProgress(
                 status="downloading",
-                progress=progress
+                progress=progress,
+                status_text=status_text
             )
         
         elif d['status'] == 'finished':
+            self.download_count += 1
+            if self.custom_status_prefix:
+                status_text = f"Finalizing {self.custom_status_prefix.replace('Downloading', '').strip()}"
+            elif self.download_count >= 2:
+                status_text = "Merging Streams (Please wait)..."
+            else:
+                status_text = "Finalizing Download..."
+                
             self.progress_dict[self.task_id] = DownloadProgress(
                 status="processing",
-                progress=100
+                progress=100,
+                status_text=status_text
             )
 
 def get_available_formats(url: str) -> dict:
@@ -544,12 +566,15 @@ def download_playlist(
         
         # Download each item
         for index, item in enumerate(items):
-            # Update progress status with current item
+            # Prefix text for the current item
+            prefix_text = f"Downloading '{item['title']}' ({index+1} of {len(items)})..."
+            
+            # Update progress status with current item (initial state)
             progress_dict[task_id] = DownloadProgress(
                 status="downloading",
-                progress=(index / len(items) * 100),
+                progress=0,
                 file_path=playlist_dir,
-                error=f"Downloading {item['title']} ({index+1}/{len(items)})"
+                status_text=f"Starting '{item['title']}' ({index+1} of {len(items)})..."
             )
             
             # Create a safe filename from the title
@@ -566,6 +591,7 @@ def download_playlist(
                     ydl_opts = {
                         'format': f'best[height<={height}]/bestvideo[height<={height}]+bestaudio/best',
                         'outtmpl': f"{output_path}.{file_format}",
+                        'progress_hooks': [ProgressHook(task_id, progress_dict, custom_status_prefix=prefix_text)],
                         'quiet': False,
                         'retries': 5,
                         'fragment_retries': 5,
@@ -579,6 +605,7 @@ def download_playlist(
                     ydl_opts = {
                         'format': 'bestaudio/best',
                         'outtmpl': output_path,
+                        'progress_hooks': [ProgressHook(task_id, progress_dict, custom_status_prefix=prefix_text)],
                         'postprocessors': [{
                             'key': 'FFmpegExtractAudio',
                             'preferredcodec': file_format,

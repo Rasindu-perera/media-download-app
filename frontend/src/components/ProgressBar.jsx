@@ -1,7 +1,7 @@
 import React from 'react';
 
 const ProgressBar = ({ downloadStatus }) => {
-  const { status, progress, error } = downloadStatus;
+  const { status, progress, error, statusText } = downloadStatus;
   
   const getProgressBarClass = () => {
     switch (status) {
@@ -24,13 +24,19 @@ const ProgressBar = ({ downloadStatus }) => {
       case 'queued':
         return 'Preparing download...';
       case 'downloading':
-        // Check if there's item-specific information in the error field
+      case 'processing':
+        // Display our new detailed status text if provided by backend
+        if (statusText) {
+          return progress > 0 && progress < 100 
+            ? `${statusText} (${Math.round(progress)}%)` 
+            : statusText;
+        }
+        // Legacy fallback
         if (error && error.startsWith('Downloading ')) {
           return error;
         }
+        if (status === 'processing') return 'Processing file...';
         return `Downloading: ${Math.round(progress)}%`;
-      case 'processing':
-        return 'Processing file...';
       case 'completed':
         return 'Download completed!';
       case 'error':

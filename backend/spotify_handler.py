@@ -21,7 +21,7 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-from downloader import DownloadProgress
+from downloader import DownloadProgress, ProgressHook
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC
 from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image
@@ -643,12 +643,14 @@ def download_spotify_playlist(
         
         # Process each track
         for index, track in enumerate(tracks):
-            # Update progress
+            prefix_text = f"Downloading '{track['title']}' ({index+1} of {len(tracks)})..."
+            
+            # Update progress initial state
             progress_dict[task_id] = DownloadProgress(
                 status="downloading",
-                progress=(index / len(tracks) * 100),
+                progress=0,
                 file_path=playlist_dir,
-                error=f"Downloading track {index+1}/{len(tracks)}: {track['title']}"
+                status_text=f"Starting '{track['title']}' ({index+1} of {len(tracks)})..."
             )
             
             artist = track['artist']
@@ -682,6 +684,7 @@ def download_spotify_playlist(
                 ydl_opts = {
                     'format': 'bestaudio/best',
                     'outtmpl': temp_path,
+                    'progress_hooks': [ProgressHook(task_id, progress_dict, custom_status_prefix=prefix_text)],
                     'quiet': True,
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',

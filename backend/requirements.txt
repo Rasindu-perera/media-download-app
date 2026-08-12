@@ -11,3 +11,4 @@ Pillow>=10.3.0
 # youtubesearchpython: used for Spotify→YouTube search (VideosSearch only).
 # Piped API is the fallback if this library breaks.
 youtube-search-python>=1.6.6
+pytubefix>=7.4.0

@@ -137,303 +137,86 @@ def _yt_oembed_info(video_id: str) -> dict:
 
 
 # ===================================================================
-# PIPED API
+# PYTUBEFIX — YouTube extraction (requires PO_TOKEN)
 # ===================================================================
 
-PIPED_INSTANCES: List[str] = [
-    "https://api.piped.private.coffee",
-]
+import json
+from pytubefix import YouTube, Playlist
 
-def _refresh_piped_instances() -> None:
-    global PIPED_INSTANCES
+def _init_pytubefix(url: str, is_playlist: bool = False):
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get("https://piped-instances.kavin.rocks/")
-            if resp.status_code == 200:
-                data = resp.json()
-                urls = []
-                for inst in data:
-                    api_url = inst.get("api_url", "")
-                    uptime = inst.get("uptime_24h", 0)
-                    if api_url and uptime > 50:
-                        urls.append(api_url.rstrip("/"))
-                if urls:
-                    seen = set()
-                    merged = []
-                    for u in urls + PIPED_INSTANCES:
-                        if u not in seen:
-                            seen.add(u)
-                            merged.append(u)
-                    PIPED_INSTANCES = merged
-                    print(f"[startup] Loaded {len(merged)} Piped instances")
-                    return
+        # Use TV client to bypass BotGuard without needing PO Tokens
+        if is_playlist:
+            return Playlist(url, client='TV')
+        return YouTube(url, client='TV')
     except Exception as e:
-        print(f"[startup] Failed to fetch Piped instances: {e}")
-    print(f"[startup] Using {len(PIPED_INSTANCES)} hardcoded Piped instances")
+        raise Exception(f"pytubefix initialization failed: {e}")
 
-
-def _piped_request(path: str) -> dict:
-    last_error = "No Piped instances."
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        for inst in PIPED_INSTANCES:
-            try:
-                resp = client.get(f"{inst}{path}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict) and data.get("error"):
-                        last_error = f"{inst}: {data['error']}"
-                        continue
-                    return data
-                last_error = f"{inst}: HTTP {resp.status_code}"
-            except Exception as e:
-                last_error = f"{inst}: {e}"
-    raise Exception(f"All Piped instances failed. Last: {last_error}")
-
-
-def _piped_get_stream_url(
-    video_id: str, format_type: str, quality: str
-) -> Tuple[str, str]:
-    data = _piped_request(f"/streams/{video_id}")
-
-    if format_type == "audio":
-        streams = data.get("audioStreams") or []
-        if not streams:
-            raise Exception("No audio streams from Piped.")
-        streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
-        s = streams[0]
-        ext = "m4a" if "mp4" in s.get("mimeType", "") else "webm"
-        return s["url"], ext
-
-    all_vs = data.get("videoStreams") or []
-    muxed = [s for s in all_vs if not s.get("videoOnly", True)]
-    target = quality.replace("p", "") + "p"
-
-    for s in muxed:
-        if s.get("quality") == target:
-            ext = "mp4" if "mp4" in s.get("mimeType", "") else "webm"
-            return s["url"], ext
-    if muxed:
-        muxed.sort(
-            key=lambda s: int(re.sub(r'\D', '', s.get("quality", "0")) or 0),
-            reverse=True,
-        )
-        s = muxed[0]
-        ext = "mp4" if "mp4" in s.get("mimeType", "") else "webm"
-        return s["url"], ext
-    if all_vs:
-        all_vs.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
-        s = all_vs[0]
-        ext = "mp4" if "mp4" in s.get("mimeType", "") else "webm"
-        return s["url"], ext
-
-    raise Exception("No video streams from Piped.")
-
-
-def _piped_get_playlist(playlist_id: str) -> dict:
-    data = _piped_request(f"/playlists/{playlist_id}")
-    all_items = list(data.get("relatedStreams") or [])
-    nextpage = data.get("nextpage")
-    pages = 0
-    while nextpage and pages < 10:
-        enc = urllib.parse.quote(str(nextpage), safe="")
-        pg = _piped_request(f"/nextpage/playlists/{playlist_id}?nextpage={enc}")
-        all_items.extend(pg.get("relatedStreams") or [])
-        nextpage = pg.get("nextpage")
-        pages += 1
-
+def _pytubefix_get_playlist(playlist_id: str) -> dict:
+    url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    pl = _init_pytubefix(url, is_playlist=True)
+    
     items = []
-    for s in all_items:
-        vid_url = s.get("url", "")
-        m = re.search(r'v=([a-zA-Z0-9_-]{11})', vid_url)
-        vid_id = m.group(1) if m else ""
-        items.append({
-            "id": f"https://www.youtube.com/watch?v={vid_id}" if vid_id else "",
-            "title": s.get("title") or "Unknown",
-            "thumbnail": s.get("thumbnail") or (
-                f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else None
-            ),
-            "duration": s.get("duration"),
-            "artist": s.get("uploaderName") or "",
-        })
+    try:
+        for v in pl.videos:
+            items.append({
+                "id": v.watch_url,
+                "title": v.title,
+                "thumbnail": v.thumbnail_url,
+                "duration": v.length,
+                "artist": v.author,
+            })
+    except Exception as e:
+        raise Exception(f"Failed to fetch pytubefix playlist tracks: {e}")
 
     if not items:
-        raise Exception("Piped returned an empty playlist.")
+        raise Exception("pytubefix returned an empty playlist.")
 
     return {
         "type": "playlist",
-        "playlist_title": data.get("name") or "YouTube Playlist",
+        "playlist_title": pl.title if pl.title else "YouTube Playlist",
         "items": items,
         "count": len(items),
         "platform": "youtube",
     }
 
+def _pytubefix_get_stream_url(video_id: str, format_type: str, quality: str) -> Tuple[str, str]:
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    yt = _init_pytubefix(url, is_playlist=False)
 
-def _piped_search(query: str) -> Optional[str]:
     try:
-        enc = urllib.parse.quote(query, safe="")
-        data = _piped_request(f"/search?q={enc}&filter=videos")
-        items = data.get("items") or data.get("relatedStreams") or []
-        if items:
-            rel = items[0].get("url", "")
-            if rel.startswith("/watch"):
-                return f"https://www.youtube.com{rel}"
+        if format_type == "audio":
+            stream = yt.streams.get_audio_only()
+            if not stream:
+                raise Exception("No audio streams found by pytubefix.")
+            ext = stream.subtype if stream.subtype else "mp4"
+            # Return raw stream URL
+            return stream.url, ext
+            
+        else:
+            # Video
+            target_res = quality.replace("p", "") + "p"
+            stream = yt.streams.filter(res=target_res, progressive=True).first()
+            if not stream:
+                stream = yt.streams.get_highest_resolution()
+            if not stream:
+                raise Exception("No video streams found by pytubefix.")
+            ext = stream.subtype if stream.subtype else "mp4"
+            # Return raw stream URL
+            return stream.url, ext
+    except Exception as e:
+        raise Exception(f"pytubefix stream extraction failed: {e}")
+
+def _pytubefix_search(query: str) -> Optional[str]:
+    # pytubefix search is not as reliable, rely on youtubesearchpython first
+    from pytubefix import Search
+    try:
+        s = Search(query)
+        if s.results:
+            return s.results[0].watch_url
     except Exception:
         pass
     return None
-
-
-# ===================================================================
-# INVIDIOUS API — fallback for playlists + stream URLs
-# ===================================================================
-
-INVIDIOUS_INSTANCES: List[str] = [
-    "https://invidious.nerdvpn.de",
-    "https://invidious.f5.si",
-]
-
-def _refresh_invidious_instances() -> None:
-    global INVIDIOUS_INSTANCES
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(
-                "https://api.invidious.io/instances.json?sort_by=type,health"
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                urls = []
-                for name, info in data:
-                    if info.get("type") == "https":
-                        uri = info.get("uri", "")
-                        monitor = info.get("monitor") or {}
-                        uptime = monitor.get("uptime_24h", 0)
-                        if uri and uptime > 50:
-                            urls.append(uri.rstrip("/"))
-                if urls:
-                    seen = set()
-                    merged = []
-                    for u in urls + INVIDIOUS_INSTANCES:
-                        if u not in seen:
-                            seen.add(u)
-                            merged.append(u)
-                    INVIDIOUS_INSTANCES = merged[:12]
-                    print(f"[startup] Loaded {len(INVIDIOUS_INSTANCES)} Invidious instances")
-                    return
-    except Exception as e:
-        print(f"[startup] Failed to fetch Invidious instances: {e}")
-    print(f"[startup] Using {len(INVIDIOUS_INSTANCES)} hardcoded Invidious instances")
-
-
-def _invidious_request(path: str) -> dict:
-    """Try each Invidious instance. Skips instances where API is disabled (403)."""
-    last_error = "No Invidious instances."
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        for inst in INVIDIOUS_INSTANCES:
-            try:
-                resp = client.get(f"{inst}{path}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict) and data.get("error"):
-                        last_error = f"{inst}: {data['error']}"
-                        continue
-                    return data
-                if resp.status_code == 403:
-                    last_error = f"{inst}: API disabled (403)"
-                    continue
-                last_error = f"{inst}: HTTP {resp.status_code}"
-            except Exception as e:
-                last_error = f"{inst}: {e}"
-    raise Exception(f"All Invidious instances failed. Last: {last_error}")
-
-
-def _invidious_get_playlist(playlist_id: str) -> dict:
-    """Fetch playlist tracks from Invidious /api/v1/playlists/{id}."""
-    data = _invidious_request(f"/api/v1/playlists/{playlist_id}")
-    items = []
-    for v in data.get("videos", []):
-        vid_id = v.get("videoId", "")
-        thumbs = v.get("videoThumbnails") or []
-        thumb_url = None
-        for t in thumbs:
-            u = t.get("url", "")
-            if u.startswith("http"):
-                thumb_url = u
-                break
-        if not thumb_url and vid_id:
-            thumb_url = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg"
-        items.append({
-            "id": f"https://www.youtube.com/watch?v={vid_id}" if vid_id else "",
-            "title": v.get("title", "Unknown"),
-            "thumbnail": thumb_url,
-            "duration": v.get("lengthSeconds"),
-            "artist": v.get("author", ""),
-        })
-    if not items:
-        raise Exception("Invidious returned an empty playlist.")
-    return {
-        "type": "playlist",
-        "playlist_title": data.get("title", "YouTube Playlist"),
-        "items": items,
-        "count": len(items),
-        "platform": "youtube",
-    }
-
-
-def _invidious_get_stream_url(
-    video_id: str, format_type: str, quality: str
-) -> Tuple[str, str]:
-    """
-    Get a stream URL proxied through an Invidious instance.
-    Uses /latest_version?id=...&itag=...&local=true so the stream is
-    proxied through Invidious's server (no IP locking issues).
-    """
-    for inst in INVIDIOUS_INSTANCES:
-        try:
-            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-                resp = client.get(f"{inst}/api/v1/videos/{video_id}")
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                if isinstance(data, dict) and data.get("error"):
-                    continue
-
-                if format_type == "audio":
-                    best = None
-                    best_br = 0
-                    for fmt in data.get("adaptiveFormats", []):
-                        ftype = fmt.get("type", "")
-                        if "audio" in ftype:
-                            br = int(fmt.get("bitrate", 0) or 0)
-                            if br > best_br:
-                                best_br = br
-                                best = fmt
-                    if best:
-                        itag = best.get("itag", "")
-                        ext = "m4a" if "mp4" in best.get("type", "") else "webm"
-                        proxy = f"{inst}/latest_version?id={video_id}&itag={itag}&local=true"
-                        return proxy, ext
-
-                else:
-                    # Muxed streams (formatStreams) have audio+video combined
-                    quality_num = quality.replace("p", "")
-                    best_stream = None
-                    for fmt in data.get("formatStreams", []):
-                        qlabel = fmt.get("qualityLabel", "")
-                        if quality_num in qlabel:
-                            best_stream = fmt
-                            break
-                    if not best_stream and data.get("formatStreams"):
-                        # Highest quality muxed stream (last in list)
-                        best_stream = data["formatStreams"][-1]
-                    if best_stream:
-                        itag = best_stream.get("itag", "")
-                        ext = "mp4" if "mp4" in best_stream.get("type", "") else "webm"
-                        proxy = f"{inst}/latest_version?id={video_id}&itag={itag}&local=true"
-                        return proxy, ext
-
-        except Exception:
-            continue
-
-    raise Exception("All Invidious instances failed for stream URL.")
 
 
 # ===================================================================
@@ -559,7 +342,7 @@ def _extract_cobalt_url(data: dict) -> str:
 # ===================================================================
 
 def _search_youtube(query: str) -> str:
-    """Search YouTube: youtubesearchpython first, then Piped fallback."""
+    """Search YouTube: youtubesearchpython first, then pytubefix fallback."""
     try:
         from youtubesearchpython import VideosSearch
         results = VideosSearch(query, limit=1).result()
@@ -568,7 +351,7 @@ def _search_youtube(query: str) -> str:
     except Exception as e:
         print(f"[search] youtubesearchpython failed: {e}")
 
-    url = _piped_search(query)
+    url = _pytubefix_search(query)
     if url:
         return url
     raise Exception(f"No YouTube results for: {query}")
@@ -579,31 +362,21 @@ def _get_yt_download_url(
     original_url: str,
 ) -> Tuple[str, str]:
     """
-    Triple-fallback YouTube download: Piped → Invidious → Cobalt.
+    Fallback YouTube download: pytubefix → Cobalt.
     Returns (stream_url, file_extension).
-    Saves each error message so the final exception is informative.
     """
     errors: List[str] = []
 
-    # --- 1. Piped ---
+    # --- 1. pytubefix ---
     try:
-        url, ext = _piped_get_stream_url(video_id, format_type, quality)
-        print(f"[download] Piped succeeded for {video_id}")
+        url, ext = _pytubefix_get_stream_url(video_id, format_type, quality)
+        print(f"[download] pytubefix succeeded for {video_id}")
         return url, ext
     except Exception as e:
-        errors.append(f"Piped: {e}")
-        print(f"[download] Piped failed for {video_id}: {e}")
+        errors.append(f"pytubefix: {e}")
+        print(f"[download] pytubefix failed for {video_id}: {e}")
 
-    # --- 2. Invidious ---
-    try:
-        url, ext = _invidious_get_stream_url(video_id, format_type, quality)
-        print(f"[download] Invidious succeeded for {video_id}")
-        return url, ext
-    except Exception as e:
-        errors.append(f"Invidious: {e}")
-        print(f"[download] Invidious failed for {video_id}: {e}")
-
-    # --- 3. Cobalt ---
+    # --- 2. Cobalt ---
     try:
         payload = _build_cobalt_payload(
             original_url, format_type, quality, file_format
@@ -628,8 +401,6 @@ def _get_yt_download_url(
 
 @app.on_event("startup")
 async def on_startup():
-    await asyncio.to_thread(_refresh_piped_instances)
-    await asyncio.to_thread(_refresh_invidious_instances)
     await asyncio.to_thread(_refresh_cobalt_instances)
 
 
@@ -641,8 +412,7 @@ async def on_startup():
 async def health_check():
     return {
         "status": "ok",
-        "piped": len(PIPED_INSTANCES),
-        "invidious": len(INVIDIOUS_INSTANCES),
+        "pytubefix": "active",
         "cobalt": len(COBALT_INSTANCES),
     }
 
@@ -750,24 +520,15 @@ async def get_playlist_info(request: PlaylistRequest):
                 pinfo["type"] = "playlist"
             return pinfo
 
-        # --- YouTube playlist (Piped → Invidious fallback) ---
+        # --- YouTube playlist (pytubefix) ---
         pl_id = _extract_yt_playlist_id(url)
         if pl_id:
-            # Try Piped
             try:
-                result = await asyncio.to_thread(_piped_get_playlist, pl_id)
+                result = await asyncio.to_thread(_pytubefix_get_playlist, pl_id)
                 if result.get("items"):
                     return result
             except Exception as e:
-                print(f"[playlist-info] Piped playlist error: {e}")
-
-            # Try Invidious
-            try:
-                result = await asyncio.to_thread(_invidious_get_playlist, pl_id)
-                if result.get("items"):
-                    return result
-            except Exception as e:
-                print(f"[playlist-info] Invidious playlist error: {e}")
+                print(f"[playlist-info] pytubefix playlist error: {e}")
 
             # Return empty playlist with title rather than falling through
             return {

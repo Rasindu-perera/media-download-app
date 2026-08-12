@@ -428,6 +428,9 @@ def download_spotify_track(
             'quiet': True,
             'verbose': False,
             'retries': 10,    # Increase retries
+            'concurrent_fragment_downloads': 10,
+            'http_chunk_size': 10485760,
+            'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
             'fragment_retries': 10,
             'ignoreerrors': True,  # Try to continue if there's an error
             'no_warnings': True,
@@ -524,6 +527,9 @@ def download_spotify_track(
                 'quiet': False,
                 'verbose': True,
                 'retries': 15,
+                'concurrent_fragment_downloads': 10,
+                'http_chunk_size': 10485760,
+                'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
                 'fragment_retries': 15,
                 'ignoreerrors': True,
             }
@@ -692,6 +698,9 @@ def download_spotify_playlist(
                         'preferredquality': str(bitrate),
                     }],
                     'retries': 3,
+                    'concurrent_fragment_downloads': 10,
+                    'http_chunk_size': 10485760,
+                    'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
                     'fragment_retries': 3,
                     'ignoreerrors': True,
                     'no_warnings': True,

@@ -23,12 +23,20 @@ class ProgressHook:
     
     def __call__(self, d):
         if d['status'] == 'downloading':
-            if 'total_bytes' in d and d['total_bytes'] > 0:
-                progress = d['downloaded_bytes'] / d['total_bytes'] * 100
-            elif 'total_bytes_estimate' in d and d['total_bytes_estimate'] > 0:
-                progress = d['downloaded_bytes'] / d['total_bytes_estimate'] * 100
-            else:
-                progress = 0
+            progress = 0
+            if '_percent_str' in d:
+                clean_str = d['_percent_str'].replace('%', '').strip()
+                if clean_str != 'N/A' and clean_str != '':
+                    try:
+                        progress = float(clean_str)
+                    except ValueError:
+                        pass
+            
+            if progress == 0:
+                if 'total_bytes' in d and d['total_bytes'] > 0:
+                    progress = d['downloaded_bytes'] / d['total_bytes'] * 100
+                elif 'total_bytes_estimate' in d and d['total_bytes_estimate'] > 0:
+                    progress = d['downloaded_bytes'] / d['total_bytes_estimate'] * 100
                 
             if self.custom_status_prefix:
                 status_text = self.custom_status_prefix
@@ -192,6 +200,9 @@ def download_video(
             'progress_hooks': [ProgressHook(task_id, progress_dict)],
             'quiet': False,
             'retries': 10,
+            'concurrent_fragment_downloads': 10,
+            'http_chunk_size': 10485760,
+            'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
             'fragment_retries': 10,
             'skip_unavailable_fragments': True,
         }
@@ -395,6 +406,9 @@ def download_audio(
         'quiet': False,
         'verbose': True,
         'retries': 10,
+        'concurrent_fragment_downloads': 10,
+        'http_chunk_size': 10485760,
+        'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
         'fragment_retries': 10,
         'skip_unavailable_fragments': True,
     }
@@ -594,6 +608,9 @@ def download_playlist(
                         'progress_hooks': [ProgressHook(task_id, progress_dict, custom_status_prefix=prefix_text)],
                         'quiet': False,
                         'retries': 5,
+                        'concurrent_fragment_downloads': 10,
+                        'http_chunk_size': 10485760,
+                        'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }
@@ -613,6 +630,9 @@ def download_playlist(
                         }],
                         'quiet': False,
                         'retries': 5,
+                        'concurrent_fragment_downloads': 10,
+                        'http_chunk_size': 10485760,
+                        'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
                         'fragment_retries': 5,
                         'skip_unavailable_fragments': True,
                     }

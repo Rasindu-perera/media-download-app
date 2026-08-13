@@ -60,3 +60,4 @@ Thumbs.db
 # Project specific
 backend/cookies.txt
 backend/tmp/
+backend/KWRMediaDownloader.spec

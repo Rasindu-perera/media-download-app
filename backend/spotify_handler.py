@@ -739,7 +739,6 @@ def download_spotify_playlist(
                     embed_metadata_and_artwork(expected_temp, metadata, file_format)
                     
                     # Move to final location
-                    import shutil
                     shutil.move(expected_temp, expected_final)
                     success_count += 1
                     

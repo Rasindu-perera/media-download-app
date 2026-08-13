@@ -1,3 +1,4 @@
+import shutil
 from config import GLOBAL_TMP_DIR
 import os
 import json
@@ -313,13 +314,11 @@ def download_video(
             if process.returncode != 0:
                 print(f"FFmpeg error: {process.stderr}")
                 # Fall back to direct copy if conversion fails
-                import shutil
                 shutil.copy2(downloaded_file, final_output)
                 print(f"Used direct copy instead of conversion")
         else:
             # For YouTube with correct quality, just rename if needed
             if downloaded_file != final_output:
-                import shutil
                 shutil.copy2(downloaded_file, final_output)
         
         # Verify final file exists
@@ -688,7 +687,6 @@ def download_playlist(
                     f.write(f"- {item['title']}: {item['error']}\n")
         
         # Create a zip file of the playlist directory
-        import shutil
         zip_path = f"{playlist_dir}.zip"
         shutil.make_archive(playlist_dir, 'zip', playlist_dir)
         
@@ -718,3 +716,30 @@ def download_playlist(
 def log_debug(msg):
     with open('debug.log', 'a') as logf:
         logf.write(msg + '\n')
+
+def download_tiktok(url: str, format_type: str, task_id: str, progress_dict: dict):
+    import urllib.request
+    import json
+    import os
+    from config import GLOBAL_TMP_DIR
+    
+    progress_dict[task_id] = DownloadProgress(status="downloading", progress=10, status_text="Fetching TikTok URL...")
+    try:
+        req = urllib.request.Request(f"https://www.tikwm.com/api/?url={url}", headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+        
+        if format_type == "audio":
+            media_url = data['data']['music']
+            file_ext = "mp3"
+        else:
+            media_url = data['data']['play']
+            file_ext = "mp4"
+            
+        final_output = os.path.join(GLOBAL_TMP_DIR, f"tiktok_{task_id}.{file_ext}")
+        progress_dict[task_id] = DownloadProgress(status="downloading", progress=50, status_text="Downloading media...")
+        urllib.request.urlretrieve(media_url, final_output)
+        
+        progress_dict[task_id] = DownloadProgress(status="completed", progress=100, file_path=final_output)
+    except Exception as e:
+        progress_dict[task_id] = DownloadProgress(status="error", progress=0, error=str(e))

@@ -47,8 +47,11 @@ const ProgressBar = ({ downloadStatus }) => {
   };
   
   return (
-    <div className="download-progress">
-      <h5 className="mb-2">{getStatusText()}</h5>
+    <div className="download-progress rounded p-3" style={{ backgroundColor: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-light)' }}>
+      <div className="d-flex justify-content-between align-items-end mb-2">
+        <h6 className="mb-0 fw-bold" style={{ color: 'var(--text-main)' }}>{getStatusText()}</h6>
+        <span className="text-muted small fw-bold">{Math.round(progress)}%</span>
+      </div>
       <div className="progress">
         <div 
           className={getProgressBarClass()}
@@ -62,7 +65,8 @@ const ProgressBar = ({ downloadStatus }) => {
       
       {status === 'completed' && (
         <div className="mt-3 text-center">
-          <p className="text-success mb-2">
+          <p className="mb-0" style={{ color: 'var(--accent)', fontWeight: '600' }}>
+            <i className="bi bi-check-circle-fill me-2"></i>
             {downloadStatus.statusText || 'Your download has completed!'}
           </p>
         </div>

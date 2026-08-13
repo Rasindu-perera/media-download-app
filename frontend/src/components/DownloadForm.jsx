@@ -111,13 +111,13 @@ const DownloadForm = ({ setDownloadStatus }) => {
         selected_indices: isPlaylist ? selectedIndices : null
       });
       
-      if (response.data.url) {
-        // Direct download URL bypasses background task polling
-        window.location.href = response.data.url;
+      if (response.data.status === 'success') {
+        // Fallback in case backend returns immediate success instead of a task
         setDownloadStatus({
           taskId: 'direct',
           status: 'completed',
-          progress: 100
+          progress: 100,
+          statusText: response.data.message || 'Saved to Downloads'
         });
         setLoading(false);
         return;
@@ -179,96 +179,207 @@ const DownloadForm = ({ setDownloadStatus }) => {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
     return (
-    <div className="download-form">
-      {url.includes('spotify.com') && (
-        <div className="alert alert-warning" role="alert">
-          
-        </div>
-      )}
-      
-      <form onSubmit={fetchFormats}>
-        <div className="mb-3">
-          <label htmlFor="url" className="form-label">Video/Audio URL</label>
-          <div className="input-group">
-            <input
-              type="text"
-              className="form-control"              id="url"
-              value={url}
-              onChange={handleUrlChange}
-              placeholder="Paste YouTube, Facebook, Instagram, TikTok, or Spotify URL"
-              required
-            />
-            <button 
-              type="submit" 
-              className="btn btn-outline-primary"
-              disabled={loading || !url}
-            >
-              {loading ? 'Loading...' : 'Check Formats'}
-            </button>
-          </div>          <div className="form-text">
-            Supports single videos, YouTube playlists, and Spotify tracks/playlists
-          </div>
-        </div>
-      </form>
-        {videoTitle && !isPlaylist && (
-        <div className="card mb-3">
-          <div className="card-header bg-primary text-white">
-            <h5 className="mb-0">
-              {url.includes('spotify.com') ? 'Track Information' : 'Video Information'}
-            </h5>
-          </div>
-          <div className="card-body">
-            <div className="mb-2">
-              <strong>Title:</strong> {videoTitle}
-            </div>
-            {url.includes('spotify.com') && formats && formats.items && formats.items[0]?.artist && (
-              <div className="mb-2">
-                <strong>Artist:</strong> {formats.items[0].artist}
-              </div>
-            )}
-            <div className="mb-0">
-              <strong>Download will be saved as:</strong> {videoTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}
-              {mediaType === 'video' ? `.${videoFormat}` : `.${audioFormat}`}
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {error && (
-        <div className="alert alert-danger">{error}</div>
-      )}
-      
-      {playlistInfo && playlistInfo.is_playlist && (
-        <div className="card mb-3">
-          <div className="card-header bg-info text-white d-flex justify-content-between align-items-center">
-            <h5 className="mb-0">
-              {playlistInfo.platform === 'spotify' ? '🎵' : '🎬'} {playlistInfo.playlist_title}
-            </h5>
-            <span className="badge bg-light text-dark">
-              {playlistInfo.count} {playlistInfo.platform === 'spotify' ? 'tracks' : 'videos'}
-            </span>
-          </div>
-          <div className="card-body">
-            <div className="d-flex justify-content-between mb-3">
+    <>
+      <div className="desktop-header">
+        <form onSubmit={fetchFormats}>
+          <div className="mb-3">
+            <label htmlFor="url" className="form-label">Video/Audio URL</label>
+            <div className="input-group">
+              <input
+                type="text"
+                className="form-control"
+                id="url"
+                value={url}
+                onChange={handleUrlChange}
+                placeholder="Paste YouTube, Facebook, Instagram, TikTok, or Spotify URL"
+                required
+              />
               <button 
-                type="button" 
-                className="btn btn-sm btn-outline-primary" 
-                onClick={toggleSelectAll}
+                type="submit" 
+                className="btn btn-outline-primary"
+                disabled={loading || !url}
               >
-                {selectAll ? 'Deselect All' : 'Select All'}
+                {loading && !formats && !playlistInfo ? 'Loading...' : 'Check Formats'}
               </button>
-              <span className="text-muted">{selectedIndices.length} of {playlistInfo.count} selected</span>
+            </div>
+            <div className="form-text mt-1">
+              Supports single videos, YouTube playlists, and Spotify tracks/playlists
+            </div>
+          </div>
+        </form>
+
+        {(formats || playlistInfo) && (
+          <form onSubmit={startDownload} className="mt-3 pt-3 border-top border-secondary" style={{ borderColor: 'var(--border-light) !important' }}>
+            <div className="row g-3 align-items-end">
+              <div className="col-md-3">
+                <label className="form-label">Media Type</label>
+                <div className="btn-group w-100" role="group">
+                  <input
+                    type="radio"
+                    className="btn-check"
+                    name="mediaType"
+                    id="videoType"
+                    value="video"
+                    checked={mediaType === 'video'}
+                    onChange={() => setMediaType('video')}
+                    disabled={url.includes('spotify.com')}
+                  />
+                  <label className={`btn btn-outline-primary ${url.includes('spotify.com') ? 'disabled' : ''}`} htmlFor="videoType">Video</label>
+                  
+                  <input
+                    type="radio"
+                    className="btn-check"
+                    name="mediaType"
+                    id="audioType"
+                    value="audio"
+                    checked={mediaType === 'audio' || url.includes('spotify.com')}
+                    onChange={() => setMediaType('audio')}
+                  />
+                  <label className="btn btn-outline-primary" htmlFor="audioType">Audio</label>
+                </div>
+              </div>
+              
+              {mediaType === 'video' ? (
+                <>
+                  <div className="col-md-3">
+                    <label htmlFor="videoQuality" className="form-label">Video Quality</label>
+                    <select
+                      className="form-select"
+                      id="videoQuality"
+                      value={videoQuality}
+                      onChange={(e) => setVideoQuality(e.target.value)}
+                    >
+                      <option value="480p">480p</option>
+                      <option value="720p">720p</option>
+                      <option value="1080p">1080p</option>
+                      <option value="4K">4K (2160p)</option>
+                    </select>
+                  </div>
+                  <div className="col-md-3">
+                    <label htmlFor="videoFormat" className="form-label">Format</label>
+                    <select
+                      className="form-select"
+                      id="videoFormat"
+                      value={videoFormat}
+                      onChange={(e) => setVideoFormat(e.target.value)}
+                    >
+                      <option value="mp4">MP4</option>
+                      <option value="webm">WebM</option>
+                    </select>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="col-md-3">
+                    <label htmlFor="audioQuality" className="form-label">Audio Quality</label>
+                    <select
+                      className="form-select"
+                      id="audioQuality"
+                      value={audioQuality}
+                      onChange={(e) => setAudioQuality(e.target.value)}
+                    >
+                      <option value="128k">128 kbps</option>
+                      <option value="256k">256 kbps</option>
+                      <option value="320k">320 kbps</option>
+                    </select>
+                  </div>
+                  <div className="col-md-3">
+                    <label htmlFor="audioFormat" className="form-label">Format</label>
+                    <select
+                      className="form-select"
+                      id="audioFormat"
+                      value={audioFormat}
+                      onChange={(e) => setAudioFormat(e.target.value)}
+                    >
+                      <option value="mp3">MP3</option>
+                      <option value="m4a">M4A</option>
+                      <option value="opus">Opus</option>
+                    </select>
+                  </div>
+                </>
+              )}
+              
+              <div className="col-md-3">
+                <button 
+                  type="submit" 
+                  className="btn btn-primary w-100"
+                  disabled={loading || (isPlaylist && selectedIndices.length === 0)}
+                >
+                  {loading && (formats || playlistInfo) ? 'Processing...' : 
+                   isPlaylist ? 
+                     `Download (${selectedIndices.length})` : 
+                     'Download'}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+      </div>
+
+      <div className="desktop-content">
+        {error && (
+          <div className="alert alert-danger">{error}</div>
+        )}
+        
+        {url.includes('spotify.com') && !formats && !playlistInfo && (
+          <div className="alert alert-warning" role="alert">
+            <i className="bi bi-exclamation-triangle"></i> Spotify DRM protection detected. Will use fallback search.
+          </div>
+        )}
+
+        {videoTitle && !isPlaylist && (
+          <div className="card mb-3">
+            <div className="card-header">
+              <h5 className="mb-0">
+                {url.includes('spotify.com') ? 'Track Information' : 'Video Information'}
+              </h5>
+            </div>
+            <div className="card-body">
+              <div className="mb-2">
+                <strong>Title:</strong> {videoTitle}
+              </div>
+              {url.includes('spotify.com') && formats && formats.items && formats.items[0]?.artist && (
+                <div className="mb-2">
+                  <strong>Artist:</strong> {formats.items[0].artist}
+                </div>
+              )}
+              <div className="mb-0 text-muted">
+                <small>Download will be saved as: {videoTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}{mediaType === 'video' ? `.${videoFormat}` : `.${audioFormat}`}</small>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {playlistInfo && playlistInfo.is_playlist && (
+          <div className="card h-100 d-flex flex-column" style={{ border: 'none', backgroundColor: 'transparent' }}>
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <h5 className="mb-0">
+                {playlistInfo.platform === 'spotify' ? '🎵' : '🎬'} {playlistInfo.playlist_title}
+              </h5>
+              <div className="d-flex align-items-center">
+                <span className="badge bg-secondary me-3">
+                  {playlistInfo.count} {playlistInfo.platform === 'spotify' ? 'tracks' : 'videos'}
+                </span>
+                <button 
+                  type="button" 
+                  className="btn btn-sm btn-outline-primary me-2" 
+                  onClick={toggleSelectAll}
+                >
+                  {selectAll ? 'Deselect All' : 'Select All'}
+                </button>
+                <span className="text-muted small">{selectedIndices.length} selected</span>
+              </div>
             </div>
             
-            <div className="playlist-items" style={{maxHeight: '300px', overflowY: 'auto'}}>
+            <div className="playlist-items flex-grow-1" style={{ overflowY: 'auto' }}>
               {playlistInfo.items.map((item, index) => (
                 <div 
                   key={item.id} 
-                  className={`playlist-item d-flex align-items-center p-2 ${selectedIndices.includes(index) ? 'bg-light border' : ''}`}
-                  style={{cursor: 'pointer', borderRadius: '4px', marginBottom: '5px'}}
+                  className={`playlist-item d-flex align-items-center p-3 ${selectedIndices.includes(index) ? 'bg-light' : ''}`}
+                  style={{cursor: 'pointer'}}
                   onClick={() => togglePlaylistItem(index)}
                 >
-                  <div className="form-check me-2">
+                  <div className="form-check me-3">
                     <input
                       type="checkbox"
                       className="form-check-input"
@@ -276,127 +387,23 @@ const DownloadForm = ({ setDownloadStatus }) => {
                       onChange={() => {}}
                       onClick={(e) => e.stopPropagation()}
                     />
-                  </div>                  <div className="ms-2 flex-grow-1">
+                  </div>
+                  <div className="flex-grow-1">
                     <div className="fw-bold">{index + 1}. {item.title}</div>
                     {item.artist && (
-                      <div className="text-muted small">Artist: {item.artist}</div>
+                      <div className="text-muted small mt-1">Artist: {item.artist}</div>
                     )}
-                    <div className="text-muted small">Duration: {formatDuration(item.duration)}</div>
+                  </div>
+                  <div className="text-muted small ms-3">
+                    {formatDuration(item.duration)}
                   </div>
                 </div>
               ))}
             </div>
           </div>
-        </div>
-      )}
-      
-      {(formats || playlistInfo) && (
-        <form onSubmit={startDownload}>          <div className="mb-3">
-            <label className="form-label">Media Type</label>
-            <div className="btn-group d-flex" role="group">
-              <input
-                type="radio"
-                className="btn-check"
-                name="mediaType"
-                id="videoType"
-                value="video"
-                checked={mediaType === 'video'}
-                onChange={() => setMediaType('video')}
-                disabled={url.includes('spotify.com')}
-              />
-              <label className={`btn btn-outline-primary ${url.includes('spotify.com') ? 'disabled' : ''}`} htmlFor="videoType">Video</label>
-              
-              <input
-                type="radio"
-                className="btn-check"
-                name="mediaType"
-                id="audioType"
-                value="audio"
-                checked={mediaType === 'audio' || url.includes('spotify.com')}
-                onChange={() => setMediaType('audio')}
-              />
-              <label className="btn btn-outline-primary" htmlFor="audioType">Audio Only</label>
-            </div>            {url.includes('spotify.com') && (
-              <div className="form-text text-warning">
-                <i className="bi bi-exclamation-triangle"></i> 
-              </div>
-            )}
-          </div>
-          
-          {mediaType === 'video' ? (
-            <div className="row mb-3">
-              <div className="col-md-6">
-                <label htmlFor="videoQuality" className="form-label">Video Quality</label>
-                <select
-                  className="form-select"
-                  id="videoQuality"
-                  value={videoQuality}
-                  onChange={(e) => setVideoQuality(e.target.value)}
-                >
-                  <option value="480p">480p</option>
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                  <option value="4K">4K (2160p)</option>
-                </select>
-              </div>
-              <div className="col-md-6">
-                <label htmlFor="videoFormat" className="form-label">Format</label>
-                <select
-                  className="form-select"
-                  id="videoFormat"
-                  value={videoFormat}
-                  onChange={(e) => setVideoFormat(e.target.value)}
-                >
-                  <option value="mp4">MP4</option>
-                  <option value="webm">WebM</option>
-                </select>
-              </div>
-            </div>
-          ) : (
-            <div className="row mb-3">
-              <div className="col-md-6">
-                <label htmlFor="audioQuality" className="form-label">Audio Quality</label>
-                <select
-                  className="form-select"
-                  id="audioQuality"
-                  value={audioQuality}
-                  onChange={(e) => setAudioQuality(e.target.value)}
-                >
-                  <option value="128k">128 kbps</option>
-                  <option value="256k">256 kbps</option>
-                  <option value="320k">320 kbps</option>
-                </select>
-              </div>
-              <div className="col-md-6">
-                <label htmlFor="audioFormat" className="form-label">Format</label>
-                <select
-                  className="form-select"
-                  id="audioFormat"
-                  value={audioFormat}
-                  onChange={(e) => setAudioFormat(e.target.value)}
-                >
-                  <option value="mp3">MP3</option>
-                  <option value="m4a">M4A</option>
-                  <option value="opus">Opus</option>
-                </select>
-              </div>
-            </div>
-          )}
-          
-          <div className="d-grid gap-2">            <button 
-              type="submit" 
-              className="btn btn-primary"
-              disabled={loading || (isPlaylist && selectedIndices.length === 0)}
-            >
-              {loading ? 'Processing...' : 
-               isPlaylist ? 
-                 `Download ${selectedIndices.length} ${playlistInfo?.platform === 'spotify' ? 'tracks' : 'videos'}` : 
-                 'Download'}
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 };
 

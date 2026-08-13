@@ -138,19 +138,14 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
                 download_progress
             )
     elif "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
-        import urllib.request
-        import json
-        try:
-            req = urllib.request.Request(f"https://www.tikwm.com/api/?url={request.url}", headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-            if request.format_type == "audio":
-                media_url = data['data']['music']
-            else:
-                media_url = data['data']['play']
-            return {"url": media_url}
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        from downloader import download_tiktok
+        background_tasks.add_task(
+            download_tiktok,
+            request.url,
+            request.format_type,
+            task_id,
+            download_progress
+        )
     elif request.is_playlist:
         background_tasks.add_task(
             download_playlist,

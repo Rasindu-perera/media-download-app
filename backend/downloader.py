@@ -1,6 +1,23 @@
+from config import GLOBAL_TMP_DIR
 import os
 import json
 import yt_dlp
+
+import sys
+def get_ffmpeg_path():
+    """Get the correct path to ffmpeg.exe (frozen or local)"""
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        # User said ffmpeg.exe is in project root (one level up from backend)
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+    ffmpeg_path = os.path.join(base_path, 'ffmpeg.exe')
+    
+    if os.path.exists(ffmpeg_path):
+        return ffmpeg_path
+    return 'ffmpeg'  # Fallback to system PATH
+
 import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass
@@ -157,7 +174,7 @@ def download_video(
 ):
     """Download a video with specified quality and format"""
     # Create tmp directory if it doesn't exist
-    os.makedirs("tmp", exist_ok=True)
+    os.makedirs(GLOBAL_TMP_DIR, exist_ok=True)
     
     # Initialize original_height to None to prevent the UnboundLocalError
     original_height = None
@@ -179,8 +196,8 @@ def download_video(
     
     # Generate unique filenames
     base_filename = f"video_{task_id}"
-    temp_output = os.path.join("tmp", base_filename)
-    final_output = os.path.join("tmp", f"{base_filename}.{file_format}")
+    temp_output = os.path.join(GLOBAL_TMP_DIR, base_filename)
+    final_output = os.path.join(GLOBAL_TMP_DIR, f"{base_filename}.{file_format}")
     
     print(f"Downloading from URL: {url}")
     print(f"Platform: {'YouTube' if is_youtube else 'Facebook' if is_facebook else 'Instagram' if is_instagram else 'TikTok' if is_tiktok else 'Other'}")
@@ -200,6 +217,7 @@ def download_video(
             'progress_hooks': [ProgressHook(task_id, progress_dict)],
             'quiet': False,
             'retries': 10,
+            'ffmpeg_location': get_ffmpeg_path(),
             'concurrent_fragment_downloads': 10,
             'http_chunk_size': 10485760,
             'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -245,7 +263,7 @@ def download_video(
                 print("="*50 + "\n")
                 
                 # Update final output path with title
-                final_output = os.path.join("tmp", f"{safe_title}_{task_id}.{file_format}")
+                final_output = os.path.join(GLOBAL_TMP_DIR, f"{safe_title}_{task_id}.{file_format}")
                 
             # Get downloaded file path and original height
             if '_filename' in info:
@@ -254,8 +272,8 @@ def download_video(
                 print(f"Original video height: {original_height}px")
             else:
                 # Search for the downloaded file
-                potential_files = [os.path.join("tmp", f) for f in os.listdir("tmp") 
-                                 if task_id in f and os.path.isfile(os.path.join("tmp", f))]
+                potential_files = [os.path.join(GLOBAL_TMP_DIR, f) for f in os.listdir(GLOBAL_TMP_DIR) 
+                                 if task_id in f and os.path.isfile(os.path.join(GLOBAL_TMP_DIR, f))]
                 
                 if potential_files:
                     downloaded_file = potential_files[0]
@@ -334,14 +352,14 @@ def download_audio(
 ):
     """Download audio with specified quality and format"""
     # Create tmp directory if it doesn't exist
-    os.makedirs("tmp", exist_ok=True)
+    os.makedirs(GLOBAL_TMP_DIR, exist_ok=True)
     
     # Create a more unique filename for the output
     import uuid
     from utils import clean_filename
     
     unique_id = task_id if task_id else str(uuid.uuid4())
-    base_output = os.path.join("tmp", f"audio_{unique_id}")
+    base_output = os.path.join(GLOBAL_TMP_DIR, f"audio_{unique_id}")
     
     # Update progress immediately
     progress_dict[task_id] = DownloadProgress(
@@ -360,7 +378,7 @@ def download_audio(
     bitrate = quality_map.get(quality, 128)
     
     # Log pre-download state of tmp directory
-    print(f"Files in tmp directory before download: {os.listdir('tmp')}")
+    print(f"Files in tmp directory before download: {os.listdir(GLOBAL_TMP_DIR)}")
     
     # First extract info without downloading to get track information
     custom_filename = None
@@ -383,7 +401,7 @@ def download_audio(
                 
                 # Create a clean filename
                 custom_filename = clean_filename(title)
-                base_output = os.path.join("tmp", f"{custom_filename}_{unique_id}")
+                base_output = os.path.join(GLOBAL_TMP_DIR, f"{custom_filename}_{unique_id}")
                 expected_filename = f"{custom_filename}_{unique_id}.{file_format}"
                 
                 print(f"Output Base Filename: {base_output.encode('ascii', 'ignore').decode('ascii')}")
@@ -406,6 +424,7 @@ def download_audio(
         'quiet': False,
         'verbose': True,
         'retries': 10,
+        'ffmpeg_location': get_ffmpeg_path(),
         'concurrent_fragment_downloads': 10,
         'http_chunk_size': 10485760,
         'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -431,26 +450,26 @@ def download_audio(
             print(f"File not found at expected path. Searching in tmp directory...")
             
             # Method 1: Check for any file with the task_id in its name
-            tmp_files = os.listdir("tmp")
+            tmp_files = os.listdir(GLOBAL_TMP_DIR)
             matching_files = [f for f in tmp_files if unique_id in f and f.endswith(f".{file_format}")]
             
             if matching_files:
-                expected_output = os.path.join("tmp", matching_files[0])
+                expected_output = os.path.join(GLOBAL_TMP_DIR, matching_files[0])
                 print(f"Found file with matching ID: {expected_output.encode('ascii', 'ignore').decode('ascii')}")
             else:
                 # Method 2: Check for any file with custom filename if we have one
                 if custom_filename:
                     matching_files = [f for f in tmp_files if custom_filename in f and f.endswith(f".{file_format}")]
                     if matching_files:
-                        expected_output = os.path.join("tmp", matching_files[0])
+                        expected_output = os.path.join(GLOBAL_TMP_DIR, matching_files[0])
                         print(f"Found file with matching title: {expected_output.encode('ascii', 'ignore').decode('ascii')}")
                     else:
                         # Method 3: Check for any recently created audio file
                         audio_files = [f for f in tmp_files if f.endswith(f".{file_format}")]
                         if audio_files:
                             # Sort by creation time, newest first
-                            audio_files.sort(key=lambda f: os.path.getctime(os.path.join("tmp", f)), reverse=True)
-                            expected_output = os.path.join("tmp", audio_files[0])
+                            audio_files.sort(key=lambda f: os.path.getctime(os.path.join(GLOBAL_TMP_DIR, f)), reverse=True)
+                            expected_output = os.path.join(GLOBAL_TMP_DIR, audio_files[0])
                             print(f"Using most recently created audio file: {expected_output.encode('ascii', 'ignore').decode('ascii')}")
                         else:
                             raise Exception(f"Could not find any downloaded audio file with format {file_format}")
@@ -459,8 +478,8 @@ def download_audio(
                     audio_files = [f for f in tmp_files if f.endswith(f".{file_format}")]
                     if audio_files:
                         # Sort by creation time, newest first
-                        audio_files.sort(key=lambda f: os.path.getctime(os.path.join("tmp", f)), reverse=True)
-                        expected_output = os.path.join("tmp", audio_files[0])
+                        audio_files.sort(key=lambda f: os.path.getctime(os.path.join(GLOBAL_TMP_DIR, f)), reverse=True)
+                        expected_output = os.path.join(GLOBAL_TMP_DIR, audio_files[0])
                         print(f"Using most recently created audio file: {expected_output.encode('ascii', 'ignore').decode('ascii')}")
                     else:
                         raise Exception(f"Could not find any downloaded audio file with format {file_format}")
@@ -556,7 +575,7 @@ def download_playlist(
 
         # Create a directory for this playlist
         playlist_title = ''.join(c if c.isalnum() or c in ' -_' else '_' for c in playlist_info['playlist_title'])
-        playlist_dir = os.path.join("tmp", f"playlist_{task_id}")
+        playlist_dir = os.path.join(GLOBAL_TMP_DIR, f"playlist_{task_id}")
         os.makedirs(playlist_dir, exist_ok=True)
         
         # Update progress with initial state
@@ -608,6 +627,7 @@ def download_playlist(
                         'progress_hooks': [ProgressHook(task_id, progress_dict, custom_status_prefix=prefix_text)],
                         'quiet': False,
                         'retries': 5,
+                        'ffmpeg_location': get_ffmpeg_path(),
                         'concurrent_fragment_downloads': 10,
                         'http_chunk_size': 10485760,
                         'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -630,6 +650,7 @@ def download_playlist(
                         }],
                         'quiet': False,
                         'retries': 5,
+                        'ffmpeg_location': get_ffmpeg_path(),
                         'concurrent_fragment_downloads': 10,
                         'http_chunk_size': 10485760,
                         'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},

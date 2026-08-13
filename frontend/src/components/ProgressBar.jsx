@@ -62,15 +62,9 @@ const ProgressBar = ({ downloadStatus }) => {
       
       {status === 'completed' && (
         <div className="mt-3 text-center">
-          <p className="text-success mb-2">Your download has completed!</p>
-          <a 
-            href={`http://localhost:8000/api/download/${downloadStatus.taskId}`}
-            className="btn btn-success"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Download Again
-          </a>
+          <p className="text-success mb-2">
+            {downloadStatus.statusText || 'Your download has completed!'}
+          </p>
         </div>
       )}
     </div>

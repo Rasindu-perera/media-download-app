@@ -5,12 +5,14 @@ This module provides functions for handling Spotify URLs and downloading content
 a YouTube search as a workaround for DRM protection in Spotify.
 """
 
+from config import GLOBAL_TMP_DIR
 import os
 import re
 import sys
+import urllib.request
 import shutil
 from typing import Dict, List, Optional, Tuple
-import requests
+
 import yt_dlp
 
 # Fix for yt-dlp UnicodeEncodeError on Windows console
@@ -21,7 +23,7 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-from downloader import DownloadProgress, ProgressHook
+from downloader import DownloadProgress, ProgressHook, get_ffmpeg_path
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC
 from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image
@@ -242,11 +244,12 @@ def download_and_resize_cover_art(image_url: str, max_size: int = 800) -> Option
     """
     try:
         # Download the image
-        response = requests.get(image_url)
-        response.raise_for_status()
+        req = urllib.request.Request(image_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            image_data = response.read()
         
         # Open with PIL and resize if needed
-        img = Image.open(BytesIO(response.content))
+        img = Image.open(BytesIO(image_data))
         
         # Convert to RGB if in another mode (e.g., RGBA)
         if img.mode != 'RGB':
@@ -342,7 +345,7 @@ def download_spotify_track(
     """
     # Create tmp directory with absolute path and working directory context
     curr_dir = os.getcwd()
-    tmp_dir = os.path.join(curr_dir, "tmp")
+    tmp_dir = os.path.join(curr_dir, GLOBAL_TMP_DIR)
     os.makedirs(tmp_dir, exist_ok=True)
     
     # Verify tmp directory exists and is writable
@@ -428,6 +431,7 @@ def download_spotify_track(
             'quiet': True,
             'verbose': False,
             'retries': 10,    # Increase retries
+            'ffmpeg_location': get_ffmpeg_path(),
             'concurrent_fragment_downloads': 10,
             'http_chunk_size': 10485760,
             'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -473,7 +477,7 @@ def download_spotify_track(
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     # Pre-check what's in the tmp directory
-                    print(f"Files in tmp before download: {os.listdir('tmp')}")
+                    print(f"Files in tmp before download: {os.listdir(GLOBAL_TMP_DIR)}")
                     
                     # Perform the download
                     info = ydl.extract_info(search_strategy, download=True)
@@ -487,7 +491,7 @@ def download_spotify_track(
                         error_messages.append(f"No entries found for search {search_strategy}")
                 
                 # Post-check what's in the tmp directory
-                print(f"Files in tmp after download: {os.listdir('tmp')}")
+                print(f"Files in tmp after download: {os.listdir(GLOBAL_TMP_DIR)}")
                 
                 # Check if the file exists now
                 if os.path.exists(expected_output):
@@ -496,10 +500,10 @@ def download_spotify_track(
                     break
                 else:
                     # Look for any file that might match
-                    tmp_files = os.listdir("tmp")
+                    tmp_files = os.listdir(GLOBAL_TMP_DIR)
                     matching_files = [f for f in tmp_files if task_id in f]
                     if matching_files:
-                        found_file = os.path.join("tmp", matching_files[0])
+                        found_file = os.path.join(GLOBAL_TMP_DIR, matching_files[0])
                         print(f"Found file with matching task ID: {found_file}")
                         # Rename to expected output if needed
                         if not found_file.endswith(f".{file_format}"):
@@ -527,6 +531,7 @@ def download_spotify_track(
                 'quiet': False,
                 'verbose': True,
                 'retries': 15,
+                'ffmpeg_location': get_ffmpeg_path(),
                 'concurrent_fragment_downloads': 10,
                 'http_chunk_size': 10485760,
                 'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -623,7 +628,7 @@ def download_spotify_playlist(
     """
     try:
         # Create a directory for this playlist
-        playlist_dir = os.path.join("tmp", f"spotify_playlist_{task_id}")
+        playlist_dir = os.path.join(GLOBAL_TMP_DIR, f"spotify_playlist_{task_id}")
         os.makedirs(playlist_dir, exist_ok=True)
         
         # Get actual playlist info using our get_spotify_details function
@@ -698,6 +703,7 @@ def download_spotify_playlist(
                         'preferredquality': str(bitrate),
                     }],
                     'retries': 3,
+                    'ffmpeg_location': get_ffmpeg_path(),
                     'concurrent_fragment_downloads': 10,
                     'http_chunk_size': 10485760,
                     'extractor_args': {'youtube': ['player_client=android', 'player_client=web']},
@@ -850,7 +856,7 @@ def download_youtube_video(
     """
     # Create tmp directory with absolute path
     curr_dir = os.getcwd()
-    tmp_dir = os.path.join(curr_dir, "tmp")
+    tmp_dir = os.path.join(curr_dir, GLOBAL_TMP_DIR)
     os.makedirs(tmp_dir, exist_ok=True)
     
     if not task_id:

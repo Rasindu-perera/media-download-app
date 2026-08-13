@@ -1,13 +1,18 @@
+from config import GLOBAL_TMP_DIR
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
+import sys
 import uuid
 from typing import Optional, List, Dict
 import shutil
 import atexit
 import time
+import multiprocessing
+from contextlib import asynccontextmanager
+from fastapi.staticfiles import StaticFiles
 
 from downloader import (
     download_video, download_audio, get_available_formats, 
@@ -17,7 +22,18 @@ from spotify_handler import (
     is_spotify_url, get_spotify_details, download_spotify_track, download_spotify_playlist
 )
 
-app = FastAPI(title="Media Downloader API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    yield
+    # Shutdown logic
+    for file in os.listdir(GLOBAL_TMP_DIR):
+        try:
+            os.remove(os.path.join(GLOBAL_TMP_DIR, file))
+        except Exception:
+            pass
+
+app = FastAPI(title="Media Downloader API", lifespan=lifespan)
 
 # Configure CORS
 app.add_middleware(
@@ -29,7 +45,7 @@ app.add_middleware(
 )
 
 # Create tmp directory if it doesn't exist
-os.makedirs("tmp", exist_ok=True)
+os.makedirs(GLOBAL_TMP_DIR, exist_ok=True)
 
 # Store download progress
 download_progress: Dict[str, DownloadProgress] = {}
@@ -122,10 +138,12 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
                 download_progress
             )
     elif "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
-        import requests
+        import urllib.request
+        import json
         try:
-            resp = requests.get(f"https://www.tikwm.com/api/?url={request.url}")
-            data = resp.json()
+            req = urllib.request.Request(f"https://www.tikwm.com/api/?url={request.url}", headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
             if request.format_type == "audio":
                 media_url = data['data']['music']
             else:
@@ -174,9 +192,25 @@ async def get_progress(task_id: str):
     return download_progress[task_id]
 
 
+def cleanup_download_file(path: str):
+    """Clean up parent folder if applicable after moving."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Cleaned up file: {path}")
+            
+        # If it was a zip file from a playlist, clean up the original playlist directory
+        if path.endswith('.zip'):
+            folder_path = path[:-4]
+            if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                shutil.rmtree(folder_path)
+                print(f"Cleaned up folder: {folder_path}")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
 @app.get("/api/download/{task_id}")
-async def get_download(task_id: str):
-    """Get the downloaded file"""
+async def get_download(task_id: str, background_tasks: BackgroundTasks):
+    """Move the downloaded file to Downloads and return success JSON"""
     if task_id not in download_progress:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -185,18 +219,34 @@ async def get_download(task_id: str):
     if progress.status != "completed":
         raise HTTPException(status_code=400, detail="Download not completed")
     
-    # Add debugging output
-    print(f"Looking for file at: {progress.file_path}")
-    print(f"File exists: {os.path.exists(progress.file_path)}")
-    
     if not os.path.exists(progress.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
-    return FileResponse(
-        path=progress.file_path,
-        filename=os.path.basename(progress.file_path),
-        media_type="application/octet-stream"
-    )
+    try:
+        downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+        os.makedirs(downloads_dir, exist_ok=True)
+        filename = os.path.basename(progress.file_path)
+        destination = os.path.join(downloads_dir, filename)
+        
+        if os.path.exists(destination):
+            try:
+                os.remove(destination)
+            except Exception:
+                pass
+                
+        shutil.move(progress.file_path, destination)
+        
+        # Schedule cleanup of potential leftover playlist directories
+        background_tasks.add_task(cleanup_download_file, progress.file_path)
+        
+        return {
+            "status": "success", 
+            "message": "Saved to Downloads", 
+            "file_name": filename,
+            "path": destination
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to move file to Downloads: {str(e)}")
 
 @app.post("/api/playlist-info")
 def get_playlist_info(request: PlaylistRequest):
@@ -210,9 +260,11 @@ def get_playlist_info(request: PlaylistRequest):
             playlist_info = get_spotify_details(request.url)
             return playlist_info
         elif "tiktok.com" in request.url or "vm.tiktok.com" in request.url:
-            import requests
-            resp = requests.get(f"https://www.tikwm.com/api/?url={request.url}")
-            data = resp.json()
+            import urllib.request
+            import json
+            req = urllib.request.Request(f"https://www.tikwm.com/api/?url={request.url}", headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
             title = data['data'].get('title', 'TikTok Video')
             return {
                 "title": title, 
@@ -233,7 +285,7 @@ def cleanup_temp_files():
     """Clean up temporary files when the server shuts down"""
     print("Cleaning up temporary files...")
     try:
-        temp_dir = "tmp"
+        temp_dir = GLOBAL_TMP_DIR
         if os.path.exists(temp_dir):
             # Get a list of all files and directories in the tmp directory
             for item in os.listdir(temp_dir):
@@ -263,18 +315,41 @@ async def trigger_cleanup():
     cleanup_temp_files()
     return {"status": "success", "message": "Temporary files cleaned up"}
 
-@app.on_event("shutdown")
-async def cleanup():
-    """Clean up temporary files on shutdown"""
-    for file in os.listdir("tmp"):
-        try:
-            os.remove(os.path.join("tmp", file))
-        except:
-            pass
+# Serve React Frontend Build
+if getattr(sys, 'frozen', False):
+    # If running as PyInstaller executable
+    frontend_dir = os.path.join(sys._MEIPASS, 'frontend', 'build')
+else:
+    # If running locally
+    frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'build')
+
+if os.path.exists(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "API is running. Frontend build not found at " + frontend_dir}
 
 if __name__ == "__main__":
     import uvicorn
     import logging
+    import threading
+    import webview
+    
     # Set up logging to see detailed output
     logging.basicConfig(level=logging.DEBUG)
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="debug")
+    multiprocessing.freeze_support()
+    
+    def run_api():
+        # Setting reload=False is crucial inside a thread and when frozen by PyInstaller
+        uvicorn.run(app, host="127.0.0.1", port=8000, reload=False, log_level="debug")
+
+    # Run Uvicorn in a background daemon thread so it dies when the main window exits
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+    
+    # Create the Desktop window pointing to our local server
+    webview.create_window('Media Downloader', 'http://127.0.0.1:8000', width=1024, height=768)
+    
+    # Start the webview event loop (this blocks the main thread until the window is closed)
+    webview.start()

@@ -4,6 +4,8 @@ A comprehensive media downloader that supports YouTube, Facebook, Instagram, Tik
 
 ## Features
 
+- **Native Desktop Application**: Packaged as a clean, standalone desktop window using PyWebView!
+- **Zero Configuration Downloads**: Files are automatically saved to your OS native `Downloads` folder, utilizing hidden background OS temp folders to keep your directories clean.
 - **Multi-platform support**: Download from YouTube, Facebook, Instagram, TikTok and Spotify*
 - **Video download options**:
   - Multiple resolutions: 480p, 720p, 1080p, 4K
@@ -22,8 +24,9 @@ A comprehensive media downloader that supports YouTube, Facebook, Instagram, Tik
 
 ### Backend
 - **Language**: Python
-- **Framework**: FastAPI
-- **Media Tool**: yt-dlp
+- **Framework**: FastAPI (runs as a daemon thread)
+- **Desktop Windowing**: PyWebView
+- **Media Tool**: yt-dlp & Cobalt API
 - **Format Conversion**: FFmpeg (integrated with yt-dlp)
 
 ### Frontend
@@ -37,62 +40,57 @@ A comprehensive media downloader that supports YouTube, Facebook, Instagram, Tik
 - Node.js 14+
 - FFmpeg
 
-### Backend Setup
+### Setup & Run
 
-1. Set up the repository
+1. Clone or download the repository
    ```bash
-   # Option 1: Clone the repository (if it contains files)
    git clone https://github.com/Rasindu-perera/media-download-app.git
    cd media-download-app
-   
-   # Option 2: Or create directories manually
-   mkdir -p media-download-app/backend
-   mkdir -p media-download-app/frontend
-   cd media-download-app
    ```
 
-2. Set up Python environment
+2. Build the React Frontend (One-time setup)
    ```bash
-   cd backend
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-3. Start the backend server
-   ```bash
-   python -m uvicorn main:app --reload #\media download app\backend>
-   ```
-
-### Frontend Setup
-
-1. Create React application and install dependencies
-   ```bash
-   # Navigate to the frontend directory
    cd frontend
-   
-   # Initialize React application
-   npx create-react-app .
-   
-   # Install additional dependencies
-   npm install axios react-bootstrap bootstrap
+   npm install
+   npm run build
    ```
 
-2. Start the development server
+3. Set up Python backend dependencies
    ```bash
-   npm start #\media download app\frontend>
+   cd ../backend
+   python -m venv venv
+   # On Windows:
+   venv\Scripts\activate
+   # On Mac/Linux:
+   source venv/bin/activate
+   
+   pip install -r requirements.txt
+   pip install -U yt-dlp
    ```
 
-3. Open your browser and navigate to `http://localhost:3000`
+4. Launch the Desktop App
+   ```bash
+   python main.py
+   ```
+   *The application will automatically launch in a native desktop window.*
+
+### Bundling into a `.exe`
+Because the app uses PyWebView and FastAPI, you can use PyInstaller to package the entire app into a single `.exe` file!
+```bash
+cd backend
+pyinstaller --noconsole --add-data "../frontend/build;frontend/build" main.py
+```
+*Note: Make sure to adjust paths and imports based on your specific pyinstaller configuration.*
 
 ## Usage
 
-1. Paste a URL from YouTube, Facebook, Instagram, TikTok, or Spotify
-2. Click "Check Formats" to analyze available options
-3. Choose between video or audio download (Spotify links automatically use audio-only mode)
-4. Select your desired quality and format
-5. Click "Download" and wait for the process to complete
-6. Your file will automatically download when ready
+1. Launch the application
+2. Paste a URL from YouTube, Facebook, Instagram, TikTok, or Spotify
+3. Click "Check Formats" to analyze available options
+4. Choose between video or audio download (Spotify links automatically use audio-only mode)
+5. Select your desired quality and format
+6. Click "Download" and wait for the process to complete
+7. The downloaded file will automatically appear in your computer's standard `Downloads` folder!
 
 ### Playlist Downloads
 
@@ -100,7 +98,7 @@ A comprehensive media downloader that supports YouTube, Facebook, Instagram, Tik
 2. Select which tracks/videos you want to download from the playlist
 3. Choose your desired quality and format
 4. Click "Download" and wait for the process to complete
-5. Your playlist will be downloaded and packaged as a ZIP file
+5. Your playlist will be downloaded and packaged as a ZIP file directly into your `Downloads` folder.
 
 ## License
 
@@ -111,5 +109,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the powerful download engine
 - [FastAPI](https://fastapi.tiangolo.com/) for the efficient backend
 - [React](https://reactjs.org/) for the frontend framework
+- [PyWebView](https://pywebview.flowrl.com/) for the native desktop integration
 
 \* *Note: Due to Spotify's DRM protection, direct downloads are not possible. For Spotify URLs, the app will search for similar tracks on YouTube as an alternative source. This is provided for educational purposes only.*

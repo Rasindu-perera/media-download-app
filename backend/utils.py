@@ -1,3 +1,4 @@
+from config import GLOBAL_TMP_DIR
 import os
 import shutil
 import re
@@ -31,7 +32,7 @@ def get_platform(url: str) -> Optional[str]:
 
 def get_temp_path(filename: str = None) -> str:
     """Get path to temporary directory, creating it if needed."""
-    temp_dir = os.path.join(os.getcwd(), "tmp")
+    temp_dir = os.path.join(os.getcwd(), GLOBAL_TMP_DIR)
     os.makedirs(temp_dir, exist_ok=True)
     
     if filename:

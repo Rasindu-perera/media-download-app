@@ -141,8 +141,20 @@ const DownloadForm = ({ setDownloadStatus }) => {
           
           if (status === 'completed') {
             clearInterval(pollInterval);
-            // Create download link
-            window.location.href = `${API_URL}/download/${taskId}`;
+            try {
+              // Trigger backend to move file to Downloads
+              const downloadResponse = await axios.get(`${API_URL}/download/${taskId}`);
+              setDownloadStatus({ 
+                taskId, 
+                status, 
+                progress, 
+                error, 
+                filePath: file_path, 
+                statusText: downloadResponse.data.message || 'Download Complete! Saved to your Downloads folder.' 
+              });
+            } catch (err) {
+              setError(`Failed to save file: ${err.response?.data?.detail || err.message}`);
+            }
           } else if (status === 'error') {
             clearInterval(pollInterval);
             setError(`Download failed: ${error}`);

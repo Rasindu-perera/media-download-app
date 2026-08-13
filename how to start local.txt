@@ -1,16 +1,22 @@
-how to start local:
+How to start local:
 
-step 01:  Install all required dependencies:
-          \media download app\backend> pip install -r requirements.txt  
-
-step 02:  Update yt-dlp to the latest version:
-          \media download app\backend> pip install -U yt-dlp
-
-step 03:  \media download app\backend> python -m uvicorn main:app --reload  (start this backend server)
-
-step 04:  \media download app\frontend> npm start (start this frontend server)
-
-step 05:  Open your browser and navigate to `http://localhost:3000`
+Step 1: Install all required dependencies
+        > cd backend
+        > pip install -r requirements.txt  
+        
+Step 2: Update yt-dlp to the latest version
+        > pip install -U yt-dlp
+        
+Step 3: Make sure your React frontend is built (do this once or when you modify the frontend)
+        > cd ../frontend
+        > npm install
+        > npm run build
+        
+Step 4: Run the Native Desktop Application
+        > cd ../backend
+        > python main.py
+        
+        The app will automatically launch in a native desktop window.
 
 Test URLs for different platforms:
 - YouTube: https://www.youtube.com/watch?v=dQw4w9WgXcQ
@@ -19,5 +25,3 @@ Test URLs for different platforms:
 - TikTok: https://www.tiktok.com/@tiktok/video/6584647400055377158
 - Spotify Track: https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT
 - Spotify Playlist: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
-
-
